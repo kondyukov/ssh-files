@@ -64,6 +64,8 @@ services:
     volumes:
       - ./keys/authorized_keys:/auth/authorized_keys:ro
       - ./fixtures/tree:/data/fixtures:ro
+      # Demo material for the welcome GIFs (see demo/record.sh).
+      - ./fixtures/demo:/data/demo:ro
       - hostkeys-plain-a:/keys
 
   sftponly:

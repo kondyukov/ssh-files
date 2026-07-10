@@ -40,8 +40,29 @@ mkdir -p fixtures/collision/a fixtures/collision/b
 printf 'collision a\n' > fixtures/collision/a/x.txt
 printf 'collision b\n' > fixtures/collision/b/x.txt
 
+# Demo fixtures (welcome-GIF material; recorded by demo/record.sh).
+# Outside tree/ and the manifest: they exist to be filmed, not verified.
+# project/ is the hierarchy-preserving upload subject (staged locally by
+# record.sh); shoot/ is served by the containers for the flat download -
+# unique vid names are what makes flat mode useful (identical basenames
+# would trip the collision guard instead).
+D=fixtures/demo
+mkdir -p "$D/project/src" "$D/project/assets" "$D/project/data" \
+         "$D/shoot/video1_data" "$D/shoot/video2_data" "$D/shoot/video3_data"
+printf '# demo project\n\nA small tree for the welcome GIF.\n' > "$D/project/README.md"
+printf 'fn main() { println!("hello"); }\n' > "$D/project/src/main.rs"
+printf 'pub fn answer() -> u32 { 42 }\n' > "$D/project/src/lib.rs"
+dd if=/dev/urandom of="$D/project/assets/logo.png" bs=1048576 count=2 2>/dev/null
+dd if=/dev/urandom of="$D/project/data/samples.bin" bs=1048576 count=48 2>/dev/null
+i=1
+for size in 18 31 24; do
+    dd if=/dev/urandom of="$D/shoot/video${i}_data/vid${i}.mp4" bs=1048576 count="$size" 2>/dev/null
+    printf 'shoot %s | camera A | 4k60 | take %s\n' "$i" "$i" > "$D/shoot/video${i}_data/metadata.txt"
+    i=$((i + 1))
+done
+
 # World-readable so the container's unprivileged user can serve them.
-chmod -R a+rX "$TREE" fixtures/collision
+chmod -R a+rX "$TREE" fixtures/collision "$D"
 
 # Manifest: relative path + sha256 for every file, sorted. Hidden files
 # are included — they are shown and transferred by default; scenarios that
@@ -53,6 +74,7 @@ done) > fixtures/manifest.sha256
 echo "fixtures: $(find "$TREE" -type f | wc -l | tr -d ' ') files, big.bin ${BIG_MIB} MiB"
 echo "manifest: fixtures/manifest.sha256"
 echo "collision pair: fixtures/collision/{a,b}/x.txt (not in manifest)"
+echo "demo fixtures: fixtures/demo/{project,shoot} (not in manifest)"
 
 # Regenerating replaces the directory the containers bind-mounted; running
 # containers keep the old (deleted) inode and serve an empty /data/fixtures.

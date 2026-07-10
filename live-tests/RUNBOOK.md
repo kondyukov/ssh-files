@@ -220,6 +220,20 @@ known_hosts, our entries are plain `host`, and BatchMode can't prompt.
 - **Tiny terminal:** resize to ~20 columns during a transfer; no panic
   (the release binary aborts on panic, so a crash is a hard fail).
 
+## Demo recording
+
+The README welcome GIFs are recorded against this same rig with vhs
+(`brew install vhs`). Fixtures include the demo material; record with
+latency so the progress bar is visible:
+
+```sh
+NETEM_DELAY=40ms docker compose up -d --force-recreate
+demo/record.sh            # or: demo/record.sh tree|flat
+```
+
+The tapes' keystrokes are position-coupled to fixtures/demo — if those
+fixtures change, re-walk the sequences (see comments in the .tape files).
+
 ## Teardown
 
 ```sh

@@ -2,6 +2,8 @@
 
 A dual-pane file manager for local and remote (SSH/SFTP) filesystems.
 
+![Flat transfer: cherry-pick files across remote folders and land them side by side locally](live-tests/demo/flat.gif)
+
 Initial soft release of v0.2.0. 
 
 Packet inspection needs to be performed to validate no network topology leakages. (e.g. with Wireshark). 
@@ -138,6 +140,8 @@ destination root: each selected file or directory lands under its own
 name, and a selected directory keeps its contents intact — like dragging
 items into a folder. The modes differ only in whether the path *above*
 each selected item is kept; neither restructures a directory's insides.
+
+![Tree transfer: upload a project with its structure intact, then recreate a single nested file's full path](live-tests/demo/tree.gif)
 
 The status line shows which byte path a transfer uses: `[streaming]` for the
 raw exec fast path, `[sftp]` when the server restricts exec (e.g.
