@@ -1,0 +1,7 @@
+# Cargo configuration for ssh-files
+# 
+# For portable builds, use: cargo build --release --features portable
+# Or run: build-portable.bat (Windows) / build-portable.sh (Linux)
+#
+# Normal builds use dynamic linking (smaller binary, requires VC++ runtime)
+# Portable builds use static linking (larger binary, no dependencies)

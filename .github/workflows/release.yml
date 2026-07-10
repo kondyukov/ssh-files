@@ -1,0 +1,235 @@
+# Build and release portable binaries for all platforms.
+#
+# Coverage: Linux x64/ARM64 (musl, fully static), Windows x64/ARM64
+# (static CRT), macOS x64/ARM64. Artifact names are a contract with
+# install.sh / install.ps1 - change them together.
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:  # Dry run: builds everything, skips the release job
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-linux-x64:
+    name: Build Linux (x64, musl)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.0
+          targets: x86_64-unknown-linux-musl
+
+      - name: Install musl-tools
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Build
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          RUSTFLAGS: "-C target-feature=+crt-static"
+        run: cargo build --release --locked --target x86_64-unknown-linux-musl
+
+      # Apache 2.0 redistribution requires LICENSE and NOTICE to travel
+      # with the binary (same for every platform archive below).
+      - name: Package
+        run: |
+          cp LICENSE NOTICE target/x86_64-unknown-linux-musl/release/
+          tar -C target/x86_64-unknown-linux-musl/release -czvf ssh-files-linux-x64.tar.gz ssh-files LICENSE NOTICE
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ssh-files-linux-x64
+          path: ssh-files-linux-x64.tar.gz
+
+  build-linux-arm64:
+    name: Build Linux (ARM64, musl)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.0
+
+      # cross provides the aarch64 musl C toolchain in a container image.
+      - name: Install cross
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+
+      - name: Build
+        env:
+          RUSTFLAGS: "-C target-feature=+crt-static"
+        run: cross build --release --locked --target aarch64-unknown-linux-musl
+
+      - name: Package
+        run: |
+          cp LICENSE NOTICE target/aarch64-unknown-linux-musl/release/
+          tar -C target/aarch64-unknown-linux-musl/release -czvf ssh-files-linux-arm64.tar.gz ssh-files LICENSE NOTICE
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ssh-files-linux-arm64
+          path: ssh-files-linux-arm64.tar.gz
+
+  build-windows-x64:
+    name: Build Windows (x64, static)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.0
+
+      - name: Build
+        env:
+          RUSTFLAGS: "-C target-feature=+crt-static"
+        run: cargo build --release --locked
+
+      # The exe must sit at the zip ROOT (install.ps1 contract); 7z keeps
+      # relative paths, so package from inside the directory.
+      - name: Package
+        run: |
+          Copy-Item LICENSE,NOTICE target/release/
+          cd target/release
+          7z a ../../ssh-files-windows-x64.zip ssh-files.exe LICENSE NOTICE
+          7z l ../../ssh-files-windows-x64.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ssh-files-windows-x64
+          path: ssh-files-windows-x64.zip
+
+  build-windows-arm64:
+    name: Build Windows (ARM64, static)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.0
+          targets: aarch64-pc-windows-msvc
+
+      # Cross-compiled on the x64 runner; the VS images ship the ARM64
+      # MSVC toolchain and the dependency tree is pure Rust.
+      - name: Build
+        env:
+          RUSTFLAGS: "-C target-feature=+crt-static"
+        run: cargo build --release --locked --target aarch64-pc-windows-msvc
+
+      # The exe must sit at the zip ROOT (install.ps1 contract); 7z keeps
+      # relative paths, so package from inside the directory.
+      - name: Package
+        run: |
+          Copy-Item LICENSE,NOTICE target/aarch64-pc-windows-msvc/release/
+          cd target/aarch64-pc-windows-msvc/release
+          7z a ../../../ssh-files-windows-arm64.zip ssh-files.exe LICENSE NOTICE
+          7z l ../../../ssh-files-windows-arm64.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ssh-files-windows-arm64
+          path: ssh-files-windows-arm64.zip
+
+  build-macos:
+    name: Build macOS (x64 + ARM64)
+    runs-on: macos-latest  # ARM runner; x64 is cross-compiled (macos-13
+                           # Intel runners are being retired)
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.0
+          targets: x86_64-apple-darwin,aarch64-apple-darwin
+
+      - name: Build ARM64
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+        run: cargo build --release --locked --target aarch64-apple-darwin
+
+      - name: Build x64
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "10.14"
+        run: cargo build --release --locked --target x86_64-apple-darwin
+
+      - name: Package
+        run: |
+          cp LICENSE NOTICE target/aarch64-apple-darwin/release/
+          cp LICENSE NOTICE target/x86_64-apple-darwin/release/
+          tar -C target/aarch64-apple-darwin/release -czvf ssh-files-macos-arm64.tar.gz ssh-files LICENSE NOTICE
+          tar -C target/x86_64-apple-darwin/release -czvf ssh-files-macos-x64.tar.gz ssh-files LICENSE NOTICE
+
+      - name: Upload ARM64 artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ssh-files-macos-arm64
+          path: ssh-files-macos-arm64.tar.gz
+
+      - name: Upload x64 artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ssh-files-macos-x64
+          path: ssh-files-macos-x64.tar.gz
+
+  release:
+    name: Create Release
+    needs:
+      - build-linux-x64
+      - build-linux-arm64
+      - build-windows-x64
+      - build-windows-arm64
+      - build-macos
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+
+      - name: List artifacts
+        run: find artifacts -type f
+
+      # Checksums use bare filenames so users can `sha256sum -c` next to
+      # a downloaded archive.
+      - name: Generate checksums
+        run: |
+          for f in artifacts/*/*; do
+            (cd "$(dirname "$f")" && sha256sum "$(basename "$f")")
+          done > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/ssh-files-linux-x64/ssh-files-linux-x64.tar.gz
+            artifacts/ssh-files-linux-arm64/ssh-files-linux-arm64.tar.gz
+            artifacts/ssh-files-windows-x64/ssh-files-windows-x64.zip
+            artifacts/ssh-files-windows-arm64/ssh-files-windows-arm64.zip
+            artifacts/ssh-files-macos-x64/ssh-files-macos-x64.tar.gz
+            artifacts/ssh-files-macos-arm64/ssh-files-macos-arm64.tar.gz
+            SHA256SUMS
+          draft: false
+          prerelease: false
+          generate_release_notes: true

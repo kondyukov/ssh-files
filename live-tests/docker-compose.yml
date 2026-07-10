@@ -1,0 +1,117 @@
+# Live test topology for ssh-files.
+#
+#   frontnet (host-reachable)          backnet (internal-only)
+#   bastion  :2201 ──────────────────┬───────────────┐
+#   gateway  :2202 ──────────────────┤               │
+#   plain-a  :2203                   │   inner-b     │  <- no published port:
+#   sftponly :2204                   └───────────────┘     reachable ONLY through
+#   pwonly   :2205                                         bastion/gateway
+#
+# inner-b having no route from the host is what makes the ProxyJump and
+# virtual-relay scenarios structurally honest: if tunneling were broken,
+# no direct fallback path exists.
+#
+# NETEM_DELAY (e.g. "40ms") injects latency inside each container so
+# streaming-vs-SFTP differences and cancel-mid-transfer become testable
+# locally. Requires NET_ADMIN (granted below); silently skipped if tc fails.
+
+x-sshd-base: &sshd-base
+  build: ./sshd
+  cap_add:
+    - NET_ADMIN
+  environment:
+    NETEM_DELAY: "${NETEM_DELAY:-}"
+  volumes:
+    - ./keys/authorized_keys:/auth/authorized_keys:ro
+    - ./fixtures/tree:/data/fixtures:ro
+  tmpfs:
+    # Fresh writable destination on every container start - upload
+    # scenarios never inherit state from a previous run.
+    - /data/incoming:mode=1777
+
+services:
+  bastion:
+    <<: *sshd-base
+    environment:
+      ROLE: plain
+      NETEM_DELAY: "${NETEM_DELAY:-}"
+    ports: ["2201:22"]
+    networks: [frontnet, backnet]
+    volumes:
+      - ./keys/authorized_keys:/auth/authorized_keys:ro
+      - ./fixtures/tree:/data/fixtures:ro
+      - hostkeys-bastion:/keys
+
+  gateway:
+    <<: *sshd-base
+    environment:
+      ROLE: plain
+      NETEM_DELAY: "${NETEM_DELAY:-}"
+    ports: ["2202:22"]
+    networks: [frontnet, backnet]
+    volumes:
+      - ./keys/authorized_keys:/auth/authorized_keys:ro
+      - ./fixtures/tree:/data/fixtures:ro
+      - hostkeys-gateway:/keys
+
+  plain-a:
+    <<: *sshd-base
+    environment:
+      ROLE: plain
+      NETEM_DELAY: "${NETEM_DELAY:-}"
+    ports: ["2203:22"]
+    networks: [frontnet]
+    volumes:
+      - ./keys/authorized_keys:/auth/authorized_keys:ro
+      - ./fixtures/tree:/data/fixtures:ro
+      - hostkeys-plain-a:/keys
+
+  sftponly:
+    <<: *sshd-base
+    environment:
+      ROLE: sftponly
+      NETEM_DELAY: "${NETEM_DELAY:-}"
+    ports: ["2204:22"]
+    networks: [frontnet]
+    volumes:
+      - ./keys/authorized_keys:/auth/authorized_keys:ro
+      - ./fixtures/tree:/data/fixtures:ro
+      - hostkeys-sftponly:/keys
+
+  pwonly:
+    <<: *sshd-base
+    environment:
+      ROLE: pwonly
+      NETEM_DELAY: "${NETEM_DELAY:-}"
+    ports: ["2205:22"]
+    networks: [frontnet]
+    volumes:
+      - ./fixtures/tree:/data/fixtures:ro
+      - hostkeys-pwonly:/keys
+
+  inner-b:
+    <<: *sshd-base
+    environment:
+      ROLE: plain
+      NETEM_DELAY: "${NETEM_DELAY:-}"
+    # No ports: only reachable through bastion/gateway on backnet.
+    networks: [backnet]
+    volumes:
+      - ./keys/authorized_keys:/auth/authorized_keys:ro
+      - ./fixtures/tree:/data/fixtures:ro
+      - hostkeys-inner-b:/keys
+
+networks:
+  frontnet:
+    driver: bridge
+  backnet:
+    driver: bridge
+    internal: true
+
+volumes:
+  hostkeys-bastion:
+  hostkeys-gateway:
+  hostkeys-plain-a:
+  hostkeys-sftponly:
+  hostkeys-pwonly:
+  hostkeys-inner-b:

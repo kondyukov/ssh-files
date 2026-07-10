@@ -1,0 +1,58 @@
+# Build and test on every platform we ship for; clippy on Linux.
+# The toolchain is pinned (here and in rust-toolchain.toml) so the clippy
+# gate cannot break from lints added in newer stables; bump both together.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:  # Allow manual trigger
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.0
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --locked
+
+      - name: Test
+        run: cargo test --locked
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.0
+          components: clippy
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+
+      # uninlined_format_args is allowed: the codebase consistently uses
+      # positional format! style. Everything else is an error.
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings -A clippy::uninlined_format_args

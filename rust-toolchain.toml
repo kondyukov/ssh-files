@@ -1,0 +1,7 @@
+# Pinned so local dev, CI, and release builds all use the identical
+# toolchain - a floating `stable` clippy gate breaks on lints added by
+# new releases with zero code changes. Bump deliberately (and update the
+# `toolchain:` inputs in .github/workflows/ to match).
+[toolchain]
+channel = "1.97.0"
+components = ["clippy"]
