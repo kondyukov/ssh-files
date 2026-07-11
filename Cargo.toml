@@ -23,10 +23,12 @@ crossterm = "0.28"
 tokio = { version = "1", features = ["full", "signal"] }
 tokio-util = "0.7"
 
-# SSH/SFTP (pure Rust, no OpenSSL dependency)
-russh = "0.46"
-russh-sftp = "2.0"
-russh-keys = "0.46"
+# SSH/SFTP, no OpenSSL dependency (russh-keys is merged into russh::keys
+# since 0.49). Modern russh requires a ring or aws-lc-rs crypto backend;
+# ring is chosen for its far better cross-compilation story (aws-lc-rs
+# needs cmake/NASM on some of our six release targets).
+russh = { version = "0.62", default-features = false, features = ["flate2", "rsa", "ring"] }
+russh-sftp = "2.3"
 # ~/.ssh/config parsing (standalone: no dependency on russh itself)
 russh-config = "0.58"
 

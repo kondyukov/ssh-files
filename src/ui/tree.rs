@@ -108,7 +108,7 @@ fn render_row(
         Span::styled(indent, base_style),
         Span::styled(format!("{} ", expand_indicator), base_style),
         Span::styled(format!("{} ", icon), base_style),
-        Span::styled(node.name.to_string(), base_style),
+        Span::styled(super::sanitize_display(node.name), base_style),
     ];
 
     if !node.is_dir {

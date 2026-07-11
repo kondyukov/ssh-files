@@ -31,6 +31,18 @@ printf 'semicolon\n' > "$N/semi;colon.txt"
 printf 'backtick\n'  > "$N/back\`tick.txt"
 printf 'glob\n'      > "$N/star*.txt"
 
+# Hostile names the manifest's newline-delimited format cannot represent:
+# embedded newline, carriage return, bang (csh history expansion), and
+# trailing space. Round-tripped in w2.5b and verified with diff -r
+# (readdir-based, so untroubled by the names). Lives OUTSIDE tree/.
+H=fixtures/hostile
+mkdir -p "$H"
+printf 'newline\n'  > "$H/new
+line.txt"
+printf 'cr\n'       > "$H/cr$(printf '\r')name.txt"
+printf 'bang\n'     > "$H/danger!bang.txt"
+printf 'trailing\n' > "$H/trailing space .txt"
+
 # Collision fixture: two files with the same basename in different
 # directories. Selecting both and sending flat maps them onto the same
 # destination path - the collision dialog must fire and nothing may
@@ -62,7 +74,7 @@ for size in 18 31 24; do
 done
 
 # World-readable so the container's unprivileged user can serve them.
-chmod -R a+rX "$TREE" fixtures/collision "$D"
+chmod -R a+rX "$TREE" fixtures/collision fixtures/hostile "$D"
 
 # Manifest: relative path + sha256 for every file, sorted. Hidden files
 # are included — they are shown and transferred by default; scenarios that
@@ -74,6 +86,7 @@ done) > fixtures/manifest.sha256
 echo "fixtures: $(find "$TREE" -type f | wc -l | tr -d ' ') files, big.bin ${BIG_MIB} MiB"
 echo "manifest: fixtures/manifest.sha256"
 echo "collision pair: fixtures/collision/{a,b}/x.txt (not in manifest)"
+echo "hostile names: fixtures/hostile (not in manifest; verify with diff -r)"
 echo "demo fixtures: fixtures/demo/{project,shoot} (not in manifest)"
 
 # Regenerating replaces the directory the containers bind-mounted; running

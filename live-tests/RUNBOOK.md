@@ -126,26 +126,37 @@ a top-level row; cursor on it, `m` → "Send tree <-" (`d` is flat). Then:
 Status **must** read `[sftp]`, not `[streaming]` (server forces
 internal-sftp). Transfer still completes; verify bytes as in w2.1.
 
-### w2.5 Naughty names round-trip
-Upload only `naughty` to a plain server (left pane rooted at
-`fixtures/tree/docs`, cursor on `naughty`, send tree or flat — it lands
-as `naughty/` either way), then download it back to a fresh local dir
-and verify against the manifest subset (`--flat` checks basenames, so
-point it at the directory itself):
+### w2.5 Naughty + hostile names round-trip  (automated)
 ```sh
-./verify.sh <local-dest>/naughty docs/naughty --flat
+scenarios/w25_roundtrip.sh        # needs vhs (brew install vhs)
 ```
-Any mismatch or missing file is a `shell_quote` bug.
+Drives the real TUI headlessly (vhs): uploads `naughty/` (the quoting
+gauntlet) and `hostile/` (names the manifest format cannot express — an
+embedded newline, a carriage return, `!`, a trailing space) to plain-a,
+downloads both back into a fresh dir, and `diff -r`s against the
+canonical fixtures — once over the streaming path and once with
+`--sftp-only`. Also asserts the exact server-side file count and that no
+`.part` residue survives anywhere. Any mismatch is a `shell_quote` bug;
+the session recording lands in `runs/w25_roundtrip*/session.gif` for
+post-mortems.
+
+To run the same check by hand, upload/download the two directories in
+the TUI and compare with `diff -r` (readdir-based, so the names don't
+faze it):
+```sh
+diff -r fixtures/hostile <local-dest>/hostile && echo OK
+```
 
 ### w2.6 Cancel mid-transfer  (needs NETEM_DELAY)
 Start a big upload, press `q` during `big.bin`, confirm cancel. Expected
 (documented behavior): stops immediately, mid-file; already-written files
-remain and the partial `big.bin` is left in place at less than its full
-size. Verify the partial exists and is truncated:
+remain under their final names and the in-flight file is left as
+`big.bin.part` at less than its full size — never as a truncated
+`big.bin`. Verify:
 ```sh
-docker compose exec -T plain-a sh -c 'ls -l /data/incoming/big.bin'
+docker compose exec -T plain-a sh -c 'ls -l /data/incoming/big.bin*'
 ```
-Re-running the transfer prompts to overwrite and completes it.
+Re-running the transfer completes it and removes the `.part`.
 
 ### w2.7 Overwrite prompt is per-batch
 Upload `docs` twice. The second run must prompt **once** for the whole

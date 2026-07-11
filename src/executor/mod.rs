@@ -175,6 +175,34 @@ pub(crate) async fn prepare_destination_dirs(
     Ok(())
 }
 
+/// In-flight destination files are written under this suffix and moved
+/// into place on completion, so a truncated arrival can never wear its
+/// final name. A cancelled transfer deliberately leaves the `.part` file
+/// (visible incompleteness; a re-run overwrites it); errored transfers
+/// delete it.
+pub const PART_SUFFIX: &str = ".part";
+
+pub(crate) fn part_path(dest_path: &str) -> String {
+    format!("{}{}", dest_path, PART_SUFFIX)
+}
+
+/// Move a completed `.part` into its final name. Plain rename first (the
+/// common case, atomic where the backend supports it), then
+/// delete-target-and-retry for rename implementations that refuse to
+/// overwrite (SFTP's RENAME, Windows). The overwrite itself was already
+/// sanctioned by the pre-transfer confirmation.
+pub(crate) async fn finalize_part(
+    dest: &dyn FileSource,
+    part: &str,
+    final_path: &str,
+) -> anyhow::Result<()> {
+    if dest.rename(part, final_path).await.is_ok() {
+        return Ok(());
+    }
+    let _ = dest.delete_file(final_path).await;
+    dest.rename(part, final_path).await
+}
+
 /// Trait for executing transfers between sources
 #[async_trait]
 pub trait TransferExecutor: Send + Sync {
@@ -349,6 +377,55 @@ mod tests {
         assert_eq!(
             fs::read(dest.path().join("docs").join("report.txt")).unwrap(),
             b"report body"
+        );
+    }
+
+    /// Every file under `root`, recursively, whose name ends in .part.
+    fn part_residue(root: &Path) -> Vec<String> {
+        let mut found = Vec::new();
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            for entry in fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.to_string_lossy().ends_with(PART_SUFFIX) {
+                    found.push(path.to_string_lossy().into_owned());
+                }
+            }
+        }
+        found
+    }
+
+    #[tokio::test]
+    async fn successful_transfer_leaves_no_part_files() {
+        let src = TempDir::new().unwrap();
+        let dest = TempDir::new().unwrap();
+        build_source(src.path());
+
+        // A stale .part from a "previously cancelled run" must be replaced,
+        // not tripped over.
+        fs::create_dir_all(dest.path().join("docs")).unwrap();
+        fs::write(dest.path().join("docs").join("report.txt.part"), b"stale half").unwrap();
+
+        let (result, _) = run_pipeline(
+            src.path(),
+            &dest.path().to_string_lossy(),
+            "docs",
+            true,
+            CancellationToken::new(),
+        )
+        .await;
+
+        assert!(matches!(result, TransferResult::Success { files_transferred: 3 }));
+        assert_eq!(
+            fs::read(dest.path().join("docs").join("report.txt")).unwrap(),
+            b"report body"
+        );
+        assert_eq!(
+            part_residue(dest.path()),
+            Vec::<String>::new(),
+            ".part files must all be renamed into place"
         );
     }
 

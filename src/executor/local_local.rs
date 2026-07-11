@@ -71,16 +71,30 @@ impl TransferExecutor for LocalToLocalExecutor {
                 let _ = self.dest.create_dir(&parent).await;
             }
 
-            // Use std::fs::copy for efficiency (blocking, but fast)
+            // Use std::fs::copy for efficiency (blocking, but fast). The
+            // copy lands in a .part file and is renamed into place, so even
+            // a crash mid-copy never leaves a partial wearing a final name.
+            // Cancel takes effect at file boundaries (the copy itself is a
+            // single blocking operation), so no .part survives a cancel
+            // here - unlike the streaming executors.
+            let part_path = super::part_path(&dest_path);
             let source_path = file.full_path.clone();
-            let dest_path_clone = dest_path.clone();
-            
+            let part_clone = part_path.clone();
+
             let result = tokio::task::spawn_blocking(move || {
-                std::fs::copy(&source_path, &dest_path_clone)
+                std::fs::copy(&source_path, &part_clone)
             }).await;
 
             match result {
                 Ok(Ok(copied)) => {
+                    if let Err(e) =
+                        super::finalize_part(self.dest.as_ref(), &part_path, &dest_path).await
+                    {
+                        return TransferResult::Error {
+                            message: format!("Failed to move {} into place: {}", part_path, e),
+                            files_completed,
+                        };
+                    }
                     files_completed += 1;
 
                     // Send completion progress
@@ -93,12 +107,14 @@ impl TransferExecutor for LocalToLocalExecutor {
                     ));
                 }
                 Ok(Err(e)) => {
+                    let _ = self.dest.delete_file(&part_path).await;
                     return TransferResult::Error {
                         message: format!("Failed to copy {}: {}", filename, e),
                         files_completed,
                     };
                 }
                 Err(e) => {
+                    let _ = self.dest.delete_file(&part_path).await;
                     return TransferResult::Error {
                         message: format!("Task error copying {}: {}", filename, e),
                         files_completed,

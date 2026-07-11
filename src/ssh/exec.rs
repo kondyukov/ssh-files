@@ -134,4 +134,22 @@ mod tests {
         );
         assert_eq!(shell_quote("/tmp/$HOME `cmd` \"x\""), "'/tmp/$HOME `cmd` \"x\"'");
     }
+
+    /// Inside POSIX single quotes nothing is interpreted, so the only
+    /// character shell_quote must touch is the quote itself; everything
+    /// else - including newlines - passes through literally. The csh
+    /// family breaks this contract (`!` and newline stay special there);
+    /// see SECURITY.md for that assumption and the --sftp-only escape
+    /// hatch.
+    #[test]
+    fn hostile_names_stay_inert() {
+        assert_eq!(shell_quote("$(rm -rf ~)"), "'$(rm -rf ~)'");
+        assert_eq!(shell_quote("a\nb.txt"), "'a\nb.txt'");
+        assert_eq!(shell_quote("a\rb.txt"), "'a\rb.txt'");
+        assert_eq!(shell_quote("danger!bang.txt"), "'danger!bang.txt'");
+        assert_eq!(shell_quote("-rf"), "'-rf'");
+        // Adjacent quotes compose: each embedded quote closes, escapes,
+        // and reopens.
+        assert_eq!(shell_quote("''"), r"''\'''\'''");
+    }
 }

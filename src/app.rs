@@ -168,25 +168,29 @@ impl App {
         })
     }
 
-    /// Standard mode: local left pane, remote right pane.
+    /// Standard mode: local left pane, remote right pane. `sftp_only`
+    /// withholds the exec handle, so every transfer takes the SFTP path
+    /// and no remote command line is ever built from a file name.
     pub async fn new_connected(
         sftp: SftpClientShared,
         conn: &ConnectionInfo,
         theme: Theme,
         keymap: Keymap,
         icons: &'static IconSet,
+        sftp_only: bool,
     ) -> Result<Self> {
         let local_path = std::env::current_dir()?;
         let local_root = local_path.to_string_lossy().to_string();
         let left: Arc<dyn FileSource> = Arc::new(LocalSource::new(local_path));
 
         let (remote_root, _entries, status) = Self::resolve_remote_path(&sftp, conn).await?;
+        let exec = if sftp_only { None } else { Some(sftp.exec_handle()) };
         let right: Arc<dyn FileSource> = Arc::new(RemoteSource::new(
             sftp.sftp(),
             remote_root.clone(),
             conn.host.clone(),
             conn.user.clone(),
-            Some(sftp.exec_handle()),
+            exec,
         ));
 
         Self::new_with_sources(
@@ -226,6 +230,7 @@ impl App {
 
     /// Dual-remote mode: both panes are remote hosts, with direct
     /// remote-to-remote transfers between them.
+    #[allow(clippy::too_many_arguments)]
     pub async fn new_dual_remote(
         left_sftp: SftpClientShared,
         left_conn: &ConnectionInfo,
@@ -234,23 +239,26 @@ impl App {
         theme: Theme,
         keymap: Keymap,
         icons: &'static IconSet,
+        sftp_only: bool,
     ) -> Result<Self> {
         let (left_root, _le, _ls) = Self::resolve_remote_path(&left_sftp, left_conn).await?;
         let (right_root, _re, _rs) = Self::resolve_remote_path(&right_sftp, right_conn).await?;
 
+        let left_exec = if sftp_only { None } else { Some(left_sftp.exec_handle()) };
+        let right_exec = if sftp_only { None } else { Some(right_sftp.exec_handle()) };
         let left: Arc<dyn FileSource> = Arc::new(RemoteSource::new(
             left_sftp.sftp(),
             left_root.clone(),
             left_conn.host.clone(),
             left_conn.user.clone(),
-            Some(left_sftp.exec_handle()),
+            left_exec,
         ));
         let right: Arc<dyn FileSource> = Arc::new(RemoteSource::new(
             right_sftp.sftp(),
             right_root.clone(),
             right_conn.host.clone(),
             right_conn.user.clone(),
-            Some(right_sftp.exec_handle()),
+            right_exec,
         ));
 
         let status = format!("{} <-> {}", left_conn.host, right_conn.host);

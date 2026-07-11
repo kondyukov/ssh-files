@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
-use async_trait::async_trait;
 use russh::client;
+use russh::keys::{self, HashAlg, PrivateKeyWithHashAlg};
 use russh_sftp::client::SftpSession;
 use std::io::{self, Write};
 use std::path::Path;
@@ -14,34 +14,34 @@ struct ClientHandler {
     port: u16,
 }
 
-#[async_trait]
 impl client::Handler for ClientHandler {
     type Error = anyhow::Error;
 
     async fn check_server_key(
         &mut self,
-        server_public_key: &russh_keys::key::PublicKey,
+        server_public_key: &keys::PublicKey,
     ) -> Result<bool, Self::Error> {
-        match russh_keys::check_known_hosts(&self.host, self.port, server_public_key) {
+        match keys::check_known_hosts(&self.host, self.port, server_public_key) {
             // Key matches the known_hosts record.
             Ok(true) => Ok(true),
             // Host not yet known: trust on first use, with confirmation.
             Ok(false) => self.confirm_unknown_key(server_public_key),
             // Key differs from the known_hosts record: possible MITM, hard fail.
-            Err(russh_keys::Error::KeyChanged { line }) => {
+            Err(keys::Error::KeyChanged { line }) => {
                 eprintln!("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@");
                 eprintln!("@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @");
                 eprintln!("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@");
                 eprintln!("Someone could be eavesdropping on you right now (man-in-the-middle attack)!");
                 eprintln!(
                     "The {} host key for '{}' does not match the key recorded in known_hosts (line {}).",
-                    server_public_key.name(),
+                    server_public_key.algorithm(),
                     self.host,
                     line
                 );
+                // Fingerprint's Display already carries the "SHA256:" prefix.
                 eprintln!(
-                    "Offending key fingerprint: SHA256:{}",
-                    server_public_key.fingerprint()
+                    "Offending key fingerprint: {}",
+                    server_public_key.fingerprint(HashAlg::Sha256)
                 );
                 eprintln!("If the change is expected, remove the old key from known_hosts and reconnect.");
                 anyhow::bail!("Host key verification failed.")
@@ -52,15 +52,15 @@ impl client::Handler for ClientHandler {
 }
 
 impl ClientHandler {
-    fn confirm_unknown_key(&self, key: &russh_keys::key::PublicKey) -> Result<bool> {
+    fn confirm_unknown_key(&self, key: &keys::PublicKey) -> Result<bool> {
         println!(
             "The authenticity of host '{}' (port {}) can't be established.",
             self.host, self.port
         );
         println!(
-            "{} key fingerprint is SHA256:{}.",
-            key.name(),
-            key.fingerprint()
+            "{} key fingerprint is {}.",
+            key.algorithm(),
+            key.fingerprint(HashAlg::Sha256)
         );
         print!("Are you sure you want to continue connecting (yes/no)? ");
         io::stdout().flush()?;
@@ -70,7 +70,7 @@ impl ClientHandler {
 
         match answer.trim().to_ascii_lowercase().as_str() {
             "yes" | "y" => {
-                match russh_keys::known_hosts::learn_known_hosts(&self.host, self.port, key) {
+                match keys::known_hosts::learn_known_hosts(&self.host, self.port, key) {
                     Ok(()) => println!(
                         "Warning: Permanently added '{}' to the list of known hosts.",
                         self.host
@@ -108,9 +108,9 @@ async fn try_key_file(
     user: &str,
     path: &Path,
 ) -> bool {
-    let keys = match russh_keys::load_secret_key(path, None) {
-        Ok(keys) => keys,
-        Err(russh_keys::Error::KeyIsEncrypted) => {
+    let key = match keys::load_secret_key(path, None) {
+        Ok(key) => key,
+        Err(keys::Error::KeyIsEncrypted) => {
             let prompt = format!(
                 "Enter passphrase for key '{}' (empty to skip): ",
                 path.display()
@@ -121,8 +121,8 @@ async fn try_key_file(
             if passphrase.is_empty() {
                 return false;
             }
-            match russh_keys::load_secret_key(path, Some(&passphrase)) {
-                Ok(keys) => keys,
+            match keys::load_secret_key(path, Some(&passphrase)) {
+                Ok(key) => key,
                 Err(e) => {
                     eprintln!("Could not decrypt {}: {}", path.display(), e);
                     return false;
@@ -132,16 +132,36 @@ async fn try_key_file(
         Err(_) => return false,
     };
 
+    // RSA keys need the negotiated rsa-sha2 variant; other algorithms
+    // take no hash parameter.
+    let hash_alg = match rsa_hash(session, key.algorithm()).await {
+        Ok(h) => h,
+        Err(_) => return false,
+    };
     session
-        .authenticate_publickey(user, Arc::new(keys))
+        .authenticate_publickey(user, PrivateKeyWithHashAlg::new(Arc::new(key), hash_alg))
         .await
+        .map(|r| r.success())
         .unwrap_or(false)
 }
 
-/// Try every identity the SSH agent holds, as ssh does by default.
+/// The rsa-sha2 hash to sign with, negotiated with the server - `None`
+/// for non-RSA keys and for servers that only speak legacy ssh-rsa.
+async fn rsa_hash(
+    session: &mut client::Handle<ClientHandler>,
+    algorithm: keys::Algorithm,
+) -> Result<Option<HashAlg>> {
+    if !matches!(algorithm, keys::Algorithm::Rsa { .. }) {
+        return Ok(None);
+    }
+    Ok(session.best_supported_rsa_hash().await?.flatten())
+}
+
+/// Try every identity the SSH agent holds, as ssh does by default. The
+/// agent only ever signs; keys never leave it.
 #[cfg(unix)]
 async fn try_agent(session: &mut client::Handle<ClientHandler>, user: &str) -> bool {
-    use russh_keys::agent::client::AgentClient;
+    use russh::keys::agent::client::AgentClient;
 
     let Ok(mut agent) = AgentClient::connect_env().await else {
         return false;
@@ -150,10 +170,19 @@ async fn try_agent(session: &mut client::Handle<ClientHandler>, user: &str) -> b
         return false;
     };
 
-    for key in identities {
-        let (returned_agent, result) = session.authenticate_future(user, key, agent).await;
-        agent = returned_agent;
-        if result.unwrap_or(false) {
+    for identity in identities {
+        // Certificate identities would need certificate auth plumbing;
+        // plain keys cover the standard agent setup.
+        let russh::keys::agent::AgentIdentity::PublicKey { key, .. } = identity else {
+            continue;
+        };
+        let Ok(hash_alg) = rsa_hash(session, key.algorithm()).await else {
+            return false;
+        };
+        let result = session
+            .authenticate_publickey_with(user, key, hash_alg, &mut agent)
+            .await;
+        if result.map(|r| r.success()).unwrap_or(false) {
             return true;
         }
     }
@@ -215,7 +244,7 @@ async fn authenticate(
     }
 
     if let Some(pass) = password {
-        if session.authenticate_password(user, pass).await.unwrap_or(false) {
+        if password_accepted(session, user, pass).await {
             return Ok(());
         }
     }
@@ -225,13 +254,25 @@ async fn authenticate(
     // prompting here is safe.
     for _ in 0..3 {
         let pass = crate::cli::read_password(&format!("{}@{}'s password: ", user, host))?;
-        if session.authenticate_password(user, &pass).await.unwrap_or(false) {
+        if password_accepted(session, user, &pass).await {
             return Ok(());
         }
         eprintln!("Permission denied, please try again.");
     }
 
     anyhow::bail!("Authentication failed for {}@{}", user, host)
+}
+
+async fn password_accepted(
+    session: &mut client::Handle<ClientHandler>,
+    user: &str,
+    pass: &str,
+) -> bool {
+    session
+        .authenticate_password(user, pass)
+        .await
+        .map(|r| r.success())
+        .unwrap_or(false)
 }
 
 /// Open a session over a direct TCP connection to `host:port`.

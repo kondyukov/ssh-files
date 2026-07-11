@@ -81,6 +81,12 @@ struct Args {
     #[arg(short = 'J', long = "jump", value_name = "JUMPS")]
     jump: Option<String>,
 
+    /// Move every byte over the SFTP protocol and never open exec
+    /// channels for transfers, so no remote command line is ever built
+    /// from a file name. Slower on high-latency links; see SECURITY.md.
+    #[arg(long = "sftp-only")]
+    sftp_only: bool,
+
     /// Force color mode: auto, truecolor, 256, ansi, none
     #[arg(long = "color", default_value = "auto")]
     color_mode: String,
@@ -120,12 +126,15 @@ async fn run_dual_remote(
     theme: Theme,
     keymap: keymap::Keymap,
     icons: &'static ui::icons::IconSet,
+    sftp_only: bool,
 ) -> Result<()> {
     let left_sftp = connect_target(&left).await?;
     let right_sftp = connect_target(&right).await?;
 
-    let app =
-        App::new_dual_remote(left_sftp, &left, right_sftp, &right, theme, keymap, icons).await?;
+    let app = App::new_dual_remote(
+        left_sftp, &left, right_sftp, &right, theme, keymap, icons, sftp_only,
+    )
+    .await?;
     run_tui(app).await
 }
 
@@ -191,8 +200,9 @@ async fn run_virtual_relay(
     theme: Theme,
     keymap: keymap::Keymap,
     icons: &'static ui::icons::IconSet,
+    sftp_only: bool,
 ) -> Result<()> {
-    run_dual_remote(host_a, host_b, theme, keymap, icons).await
+    run_dual_remote(host_a, host_b, theme, keymap, icons, sftp_only).await
 }
 
 #[tokio::main]
@@ -245,11 +255,17 @@ async fn main() -> Result<()> {
     // terminal setup.
     if let Some(pair) = &args.dual_remote {
         let (source, target) = parse_target_pair(pair, args.identity_file.as_ref())?;
-        return run_dual_remote(jumped(source), jumped(target), theme, config.keymap, icons).await;
+        return run_dual_remote(
+            jumped(source), jumped(target), theme, config.keymap, icons, args.sftp_only,
+        )
+        .await;
     }
     if let Some(targets) = &args.virtual_relay {
         let (host_a, host_b) = parse_relay_endpoints(targets, args.identity_file.as_ref())?;
-        return run_virtual_relay(jumped(host_a), jumped(host_b), theme, config.keymap, icons).await;
+        return run_virtual_relay(
+            jumped(host_a), jumped(host_b), theme, config.keymap, icons, args.sftp_only,
+        )
+        .await;
     }
 
     let app = if let Some(dir) = &args.local {
@@ -280,7 +296,7 @@ async fn main() -> Result<()> {
             return bench::run(&sftp, &conn, size_mib).await;
         }
 
-        App::new_connected(sftp, &conn, theme, config.keymap, icons).await?
+        App::new_connected(sftp, &conn, theme, config.keymap, icons, args.sftp_only).await?
     };
 
     run_tui(app).await

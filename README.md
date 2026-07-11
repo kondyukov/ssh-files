@@ -4,25 +4,37 @@ A dual-pane file manager for local and remote (SSH/SFTP) filesystems.
 
 ![Flat transfer: cherry-pick files across remote folders and land them side by side locally](live-tests/demo/flat.gif)
 
-Initial soft release of v0.2.0. 
+## Why ssh-files
 
-Packet inspection needs to be performed to validate no network topology leakages. (e.g. with Wireshark). 
-
-Linux ARM, Windows ARM, and macOS x64 versions need runtime testing on actual hardware. 
+- **Transfers skip SFTP when they can.** Bytes ride a raw exec stream
+  whenever the server allows it, which helps most on high-latency links,
+  and fall back to SFTP automatically, per server, when exec is
+  restricted. [BENCHMARKS.md](BENCHMARKS.md) has measurements against
+  OpenSSH sftp/scp and rsync, in both directions.
+- **Multi-hop that behaves like ssh.** ProxyJump chains with per-hop
+  authentication and per-hop host-key verification, from `-J` or
+  `~/.ssh/config`.
+- **Both panes can be remote.** Server-to-server transfers stream through
+  the client, so no key material is forwarded and the servers never talk
+  to each other.
+- **Nothing to install remotely, nothing privileged locally.** A single
+  static binary in userland talking to plain sshd.
 
 ## Features
 
 - Dual-pane interface (local + remote)
-- Streaming transfers over raw exec channels — several times faster than
-  SFTP on high-latency links (see [BENCHMARKS.md](BENCHMARKS.md)), with
-  automatic SFTP fallback for exec-restricted servers
+- Streaming transfers over raw exec channels — noticeably faster than the
+  SFTP fallback path on high-latency links (see
+  [BENCHMARKS.md](BENCHMARKS.md)), with automatic SFTP fallback for
+  exec-restricted servers, and `--sftp-only` to never use exec at all
 - Local mode (`--local`) for plain dual-pane file management without SSH
 - Dual-remote mode (`--dual-remote`) — both panes on remote hosts, with
-  direct remote-to-remote transfers
+  remote-to-remote transfers
 - ProxyJump (`-J`, ssh syntax) — multi-hop tunneling with per-hop
   authentication and host-key verification; `--virtual-relay` builds on it
-  so the client never peers directly with either endpoint
-- SSH/SFTP with password and key authentication
+  for endpoint pairs that are each only reachable through their own bastion
+- Authentication like `ssh`: explicit `-i` keys, then every SSH agent
+  identity, then default key files, then password
 - `~/.ssh/config` support — host aliases, per-host users/ports/keys, and
   config-driven `ProxyJump`
 - Host key verification against `known_hosts` (trust-on-first-use)
@@ -86,9 +98,11 @@ ssh-files -J u1@hop1,u2@hop2:2022 user@hostname  # multi-hop chain, ssh -J synta
 ssh-files --local                # both panes in the current directory
 ssh-files --local ~/Downloads    # right pane opens in ~/Downloads
 ssh-files --dual-remote user@a:/x user@b:/y      # dual-pane remote-to-remote browsing
-ssh-files --virtual-relay user@r user@a user@b   # dual-remote where each host is reached
-                                                 # through relay r; the client never peers
-                                                 # with a or b directly
+ssh-files --virtual-relay user@r user@a user@b   # dual-remote where both endpoints are
+                                                 # reached only through relay r (bastion,
+                                                 # jump box, or segmented network)
+ssh-files --sftp-only user@host  # never open exec channels: all bytes move over
+                                 # the SFTP protocol (see SECURITY.md)
 ssh-files --bench user@host:/tmp # measure transfer throughput (default 256 MiB)
 ssh-files --bench=64 user@host   # smaller benchmark for slow links
 ```
@@ -97,8 +111,9 @@ ssh-files --bench=64 user@host   # smaller benchmark for slow links
 previous one, and every hop is authenticated and host-key-verified under its
 own name. A `-J` chain applies to every target of the chosen mode.
 `--virtual-relay` also accepts four arguments (`RELAY_A HOST_A RELAY_B
-HOST_B`) to give each endpoint its own relay, so A and B never share an
-observed network peer. Each relay argument may itself be a multi-hop chain
+HOST_B`) to give each endpoint its own relay — for hosts that sit behind
+different bastions, or in segmented networks that cannot (or must not)
+route to each other. Each relay argument may itself be a multi-hop chain
 in `-J` syntax: `user@r1,user@r2`.
 
 ### SSH config
@@ -129,7 +144,7 @@ Not supported (yet): `Include`, `Match` blocks, `ProxyCommand`, and
 
 `--bench` compares the SFTP transfer path against a raw exec byte stream over
 the same connection, plus the system `scp` as a baseline, and prints MiB/s for
-each. Useful for diagnosing slow links before pointing fingers at the tool.
+each. Useful for diagnosing slow links.
 
 ### Transfer behavior
 
@@ -151,12 +166,15 @@ talk to each other) and pick the byte path per side independently; when
 the sides differ the label reads `[read/write]`, e.g. `[streaming/sftp]`
 for a source that streams into a destination that only allows SFTP.
 
-Cancelling a transfer stops immediately, mid-file: everything already
-written stays at the destination, including the partially written current
-file. Re-run the transfer (confirming overwrite) to complete it. The one
-exception is local-to-local copies, which copy each file in a single
-atomic operation — cancel there takes effect at the next file boundary,
-so no partial files occur.
+Files arrive under a temporary `.part` name and are renamed into place
+only once every byte is verified — a file wearing its final name is never
+truncated, no matter how the transfer ended. Cancelling stops
+immediately, mid-file: completed files stay, and the in-flight file
+remains as a visible `<name>.part`. Re-run the transfer (confirming
+overwrite) to complete it. Errored transfers delete their `.part`
+instead. Local-to-local copies are the one variation: each file is a
+single atomic copy, so cancel takes effect at the next file boundary and
+no partial ever exists.
 
 ## Keys
 
@@ -250,8 +268,23 @@ icons = "ascii"   # or "unicode" / "auto"
 Invalid entries in either section are reported on startup and skipped; the app
 never fails to start because of a bad config.
 
+## Status
+
+v0.2.0, soft release. Connection handling, host-key verification, and
+transfer correctness (including a hostile-filename gauntlet) are exercised
+against a containerized multi-host matrix — see
+[live-tests/RUNBOOK.md](live-tests/RUNBOOK.md). What the tool does with
+keys, passwords, and host verification — and where it knowingly diverges
+from OpenSSH — is written down in [SECURITY.md](SECURITY.md). Still
+pending: packet-capture review of the multi-hop modes, and runtime testing
+of the Linux ARM64, Windows ARM64, and macOS x64 binaries on real
+hardware.
+
 ## Future Work
 
+- **Copy as rsync** — a context-menu entry that emits the `rsync` command
+  equivalent to the transfer the current selection would perform: paste it
+  into a script, or use it to double-check us
 - **Lazy clipboard** — copy/cut/paste across panes and modes, resolved at
   paste time rather than copy time
 - **Direct tar / zip transfers** — bundle a selection into a single archive

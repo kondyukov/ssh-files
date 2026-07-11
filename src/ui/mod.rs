@@ -169,6 +169,27 @@ fn render_panes(frame: &mut Frame, app: &mut App, area: Rect) {
     );
 }
 
+/// Filenames can legally contain control characters (the transfer paths
+/// move them byte-exactly), but the terminal must never interpret them:
+/// an embedded newline or CR shreds the widget it is printed into, and a
+/// raw ESC could smuggle ANSI sequences to the terminal. Every
+/// filename-bearing string headed for a widget goes through here.
+///
+/// `is_control` covers Cc (C0 + DEL + C1, so ESC and the one-byte C1 CSI
+/// included). The explicit bidi overrides (U+202A-U+202E, U+2066-U+2069)
+/// are neutralized too - they reorder what the user *sees*, the classic
+/// name-spoofing trick. Other format characters (ZWNJ/ZWJ) stay: they are
+/// legitimate in Persian/Arabic names.
+pub(super) fn sanitize_display(text: &str) -> String {
+    text.chars()
+        .map(|c| match c {
+            c if c.is_control() => '\u{FFFD}',
+            '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' => '\u{FFFD}',
+            c => c,
+        })
+        .collect()
+}
+
 fn render_progress(frame: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
 
@@ -196,7 +217,7 @@ fn render_progress(frame: &mut Frame, app: &App, area: Rect) {
         .block(Block::default().borders(Borders::ALL).title(" Progress "))
         .gauge_style(theme.progress_bar())
         .percent(progress as u16)
-        .label(label);
+        .label(sanitize_display(&label));
 
     frame.render_widget(gauge, area);
 }
@@ -215,7 +236,8 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
         String::new()
     };
 
-    let status_text = format!(" {}{} | ? for help ", app.status, marked_info);
+    let status_text =
+        sanitize_display(&format!(" {}{} | ? for help ", app.status, marked_info));
 
     let status = Paragraph::new(status_text)
         .style(theme.status())
@@ -547,4 +569,23 @@ fn render_delete_modal(frame: &mut Frame, app: &App) {
     lines.push(key_hints(theme, &[("Y", "Delete"), ("N/Esc", "Cancel")]));
 
     render_dialog(frame, area, " Confirm Delete ", theme.status(), lines);
+}
+
+#[cfg(test)]
+mod sanitize_tests {
+    use super::sanitize_display;
+
+    #[test]
+    fn hostile_names_render_inert() {
+        assert_eq!(sanitize_display("plain héllo📁.txt"), "plain héllo📁.txt");
+        assert_eq!(sanitize_display("new\nline.txt"), "new\u{FFFD}line.txt");
+        assert_eq!(sanitize_display("cr\rname.txt"), "cr\u{FFFD}name.txt");
+        // ESC and the single-char C1 CSI can start ANSI sequences.
+        assert_eq!(sanitize_display("\x1b[31mred"), "\u{FFFD}[31mred");
+        assert_eq!(sanitize_display("\u{9b}31mred"), "\u{FFFD}31mred");
+        // RLO reverses displayed order: "gpj.exe" spoofing.
+        assert_eq!(sanitize_display("x\u{202E}gpj.exe"), "x\u{FFFD}gpj.exe");
+        // Persian ZWNJ is a legitimate name character and must survive.
+        assert_eq!(sanitize_display("می\u{200C}خواهم"), "می\u{200C}خواهم");
+    }
 }

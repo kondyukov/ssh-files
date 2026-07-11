@@ -58,6 +58,9 @@ impl TransferExecutor for LocalToRemoteExecutor {
                 .unwrap_or_else(|| file.relative_path.clone());
 
             let dest_path = self.dest.join_path(dest_base, &file.relative_path);
+            // Bytes land in a .part file and are moved into place on
+            // completion, so a truncated arrival never wears a final name.
+            let part_path = super::part_path(&dest_path);
 
             // Send initial progress
             let _ = progress_tx.try_send(TransferProgress::new(
@@ -81,9 +84,9 @@ impl TransferExecutor for LocalToRemoteExecutor {
 
             // Prefer the raw streaming path (no per-chunk acknowledgments);
             // fall back to SFTP when the server does not allow exec.
-            let mut writer = match self.dest.open_stream_write(&dest_path).await {
+            let mut writer = match self.dest.open_stream_write(&part_path).await {
                 Ok(Some(w)) => w,
-                _ => match self.dest.open_write(&dest_path).await {
+                _ => match self.dest.open_write(&part_path).await {
                     Ok(w) => w,
                     Err(e) => {
                         return TransferResult::Error {
@@ -101,8 +104,9 @@ impl TransferExecutor for LocalToRemoteExecutor {
 
             loop {
                 if cancel.is_cancelled() {
-                    // Stop immediately; the partially written file is
-                    // deliberately left in place (re-running overwrites it).
+                    // Stop immediately; the partial .part file is
+                    // deliberately left in place as visible incompleteness
+                    // (re-running the transfer overwrites it).
                     return TransferResult::Cancelled { files_completed };
                 }
 
@@ -112,7 +116,7 @@ impl TransferExecutor for LocalToRemoteExecutor {
                     Err(e) => {
                         // Errored files are untrustworthy: clean up the
                         // partial (unlike cancel, which keeps it).
-                        let _ = self.dest.delete_file(&dest_path).await;
+                        let _ = self.dest.delete_file(&part_path).await;
                         return TransferResult::Error {
                             message: format!("Read error on {}: {}", filename, e),
                             files_completed,
@@ -121,7 +125,7 @@ impl TransferExecutor for LocalToRemoteExecutor {
                 };
 
                 if let Err(e) = writer.write_all(&buffer[..n]).await {
-                    let _ = self.dest.delete_file(&dest_path).await;
+                    let _ = self.dest.delete_file(&part_path).await;
                     return TransferResult::Error {
                         message: format!("Write error on {}: {}", dest_path, e),
                         files_completed,
@@ -145,10 +149,23 @@ impl TransferExecutor for LocalToRemoteExecutor {
                 }
             }
 
-            // Flush and close
+            // Flush and close. For a streamed write this also waits for the
+            // remote process's exit status - the only write confirmation
+            // the streaming path has.
             if let Err(e) = writer.flush().await {
+                let _ = self.dest.delete_file(&part_path).await;
                 return TransferResult::Error {
                     message: format!("Flush error on {}: {}", dest_path, e),
+                    files_completed,
+                };
+            }
+
+            // All bytes written: move the .part into its final name.
+            if let Err(e) = super::finalize_part(self.dest.as_ref(), &part_path, &dest_path).await {
+                // The bytes are complete; only the rename failed. Leave the
+                // .part for manual salvage rather than deleting good data.
+                return TransferResult::Error {
+                    message: format!("Failed to move {} into place: {}", part_path, e),
                     files_completed,
                 };
             }
