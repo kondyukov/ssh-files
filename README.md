@@ -283,9 +283,13 @@ never fails to start because of a bad config.
 
 ## Status
 
-v0.2.0, soft release. Connection handling, host-key verification, and
-transfer correctness (including a hostile-filename gauntlet) are exercised
-against a containerized multi-host matrix — see
+v0.2.1, hardening release: keyboard-interactive auth and ssh_config
+`Include`, defenses against malicious servers (path traversal, symlink
+tricks, fabricated trees, `@revoked` host keys), a copy-as-rsync menu
+entry, and supply-chain measures (dependency auditing, pinned CI,
+attested release binaries). Connection handling, host-key verification,
+and transfer correctness (including a hostile-filename gauntlet) are
+exercised against a containerized multi-host matrix — see
 [live-tests/RUNBOOK.md](live-tests/RUNBOOK.md). What the tool does with
 keys, passwords, and host verification — and where it knowingly diverges
 from OpenSSH — is written down in [SECURITY.md](SECURITY.md). Still

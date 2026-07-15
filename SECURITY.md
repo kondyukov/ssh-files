@@ -43,7 +43,7 @@ authenticated and verified under its own name (s06–s08).
 The file format matches OpenSSH: non-22 ports are recorded as
 `[host]:port` (byte-identical to `ssh-keyscan` output, verified on the
 test rig), and hashed entries (`HashKnownHosts yes`, the Debian/Ubuntu
-default) are read and matched. One migration note: versions before 0.3
+default) are read and matched. One migration note: versions before 0.2.1
 recorded non-22 hosts under the plain host name; those old entries no
 longer match, so the first reconnect to such a host re-prompts and
 records the correct form.
