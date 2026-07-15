@@ -25,10 +25,6 @@ ignore = [
     # contact - not the high-volume decryption oracle the attack needs.
     # Revisit when the rsa crate ships the constant-time rewrite.
     { id = "RUSTSEC-2023-0071", reason = "no upstream fix; client-side single-signature usage is not the attack's oracle shape" },
-    # paste: unmaintained, pulled by ratatui 0.29. Proc-macro crate:
-    # compile-time only, zero runtime code in shipped binaries. Drops
-    # out when ratatui does; nothing to do downstream meanwhile.
-    { id = "RUSTSEC-2024-0436", reason = "compile-time proc-macro only; waiting on ratatui to drop it" },
 ]
 
 [licenses]
