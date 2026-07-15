@@ -36,7 +36,7 @@ russh-config = "0.58"
 # Utilities
 anyhow = "1"
 async-trait = "0.1"
-directories = "5"
+directories = "6"
 chrono = "0.4"
 humansize = "2"
 clap = { version = "4", features = ["derive"] }
