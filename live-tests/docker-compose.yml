@@ -91,6 +91,17 @@ services:
       - ./fixtures/tree:/data/fixtures:ro
       - hostkeys-pwonly:/keys
 
+  kbdint:
+    <<: *sshd-base
+    environment:
+      ROLE: kbdint
+      NETEM_DELAY: "${NETEM_DELAY:-}"
+    ports: ["2206:22"]
+    networks: [frontnet]
+    volumes:
+      - ./fixtures/tree:/data/fixtures:ro
+      - hostkeys-kbdint:/keys
+
   inner-b:
     <<: *sshd-base
     environment:
@@ -116,4 +127,5 @@ volumes:
   hostkeys-plain-a:
   hostkeys-sftponly:
   hostkeys-pwonly:
+  hostkeys-kbdint:
   hostkeys-inner-b:

@@ -1,0 +1,62 @@
+# cargo-deny configuration: advisories, licenses, bans, sources.
+# Run locally with `cargo deny check`; CI runs it weekly and on any
+# manifest change (.github/workflows/supply-chain.yml).
+
+[graph]
+# Check the dependency tree for every target we actually ship.
+targets = [
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+    "x86_64-pc-windows-msvc",
+    "aarch64-pc-windows-msvc",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+]
+all-features = true
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = [
+    # rsa: Marvin attack (timing sidechannel on PKCS#1 v1.5 private-key
+    # operations). No fixed release exists (rsa 0.9.x, pulled via
+    # russh -> ssh-key). Exposure here is one signature per RSA auth
+    # attempt with the user's own key against servers the user chose to
+    # contact - not the high-volume decryption oracle the attack needs.
+    # Revisit when the rsa crate ships the constant-time rewrite.
+    { id = "RUSTSEC-2023-0071", reason = "no upstream fix; client-side single-signature usage is not the attack's oracle shape" },
+    # paste: unmaintained, pulled by ratatui 0.29. Proc-macro crate:
+    # compile-time only, zero runtime code in shipped binaries. Drops
+    # out when ratatui does; nothing to do downstream meanwhile.
+    { id = "RUSTSEC-2024-0436", reason = "compile-time proc-macro only; waiting on ratatui to drop it" },
+]
+
+[licenses]
+version = 2
+# Everything must land in this list; additions deserve the same scrutiny
+# as a new dependency.
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    # BSL-1.0 (Boost): permissive, OSI-approved. clipboard-win/error-code
+    # on the Windows clipboard path.
+    "BSL-1.0",
+    # MPL-2.0: file-level weak copyleft, used unmodified (option-ext via
+    # directories); imposes nothing on our Apache-2.0 binaries.
+    "MPL-2.0",
+]
+
+[bans]
+# 354 locked packages: duplicate transitive versions are inevitable and
+# not a security signal - surface them without failing.
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

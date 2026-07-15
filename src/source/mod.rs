@@ -48,6 +48,10 @@ pub struct CollectedFiles {
     pub dirs: Vec<String>,
     /// Total bytes of all files
     pub total_bytes: u64,
+    /// Symbolic links encountered during the walk and deliberately skipped
+    /// (not followed or transferred). Surfaced to the user so a partial
+    /// transfer is never silently mistaken for a complete one.
+    pub skipped_symlinks: usize,
 }
 
 impl CollectedFiles {
@@ -72,6 +76,17 @@ impl CollectedFiles {
 
     pub fn is_empty(&self) -> bool {
         self.files.is_empty()
+    }
+
+    /// A human-readable suffix noting symbolic links that were skipped, or
+    /// the empty string when none were. Appended to transfer-start status
+    /// so a partial transfer is never silently taken for a complete one.
+    pub fn skipped_note(&self) -> String {
+        match self.skipped_symlinks {
+            0 => String::new(),
+            1 => " (1 symlink skipped)".to_string(),
+            n => format!(" ({n} symlinks skipped)"),
+        }
     }
 }
 
@@ -156,6 +171,22 @@ pub trait FileSource: Send + Sync {
         None
     }
 
+    // === rsync command generation (text only - never executed) ===
+
+    /// The `user@host:` prefix rsync uses to name paths on this source;
+    /// empty for local sources.
+    fn rsync_prefix(&self) -> String {
+        String::new()
+    }
+
+    /// The ssh command (for rsync's `-e`) that reaches this source, when
+    /// it is remote and the connection needs non-default flags (port,
+    /// identity files, ProxyJump). None for local sources and for plain
+    /// `ssh host` connections.
+    fn rsync_ssh_command(&self) -> Option<String> {
+        None
+    }
+
     /// Rename a file or directory
     async fn rename(&self, from: &str, to: &str) -> Result<()>;
 
@@ -189,4 +220,4 @@ pub trait FileSource: Send + Sync {
 // Re-export types
 pub use local::LocalSource;
 pub use mapping::WalkEntry;
-pub use remote::RemoteSource;
+pub use remote::{RemoteCliOpts, RemoteSource};

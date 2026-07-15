@@ -1,6 +1,8 @@
 # Build and test on every platform we ship for; clippy on Linux.
 # The toolchain is pinned (here and in rust-toolchain.toml) so the clippy
 # gate cannot break from lints added in newer stables; bump both together.
+# Actions are pinned to full SHAs (mutable tags are a supply-chain
+# vector); dependabot keeps the pins fresh.
 name: CI
 
 on:
@@ -8,6 +10,9 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:  # Allow manual trigger
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -21,15 +26,15 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable branch
         with:
           toolchain: 1.97.0
 
       - name: Cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@23869a5bd66c73db3c0ac40331f3206eb23791dc # v2.9.1
 
       - name: Build
         run: cargo build --locked
@@ -41,16 +46,16 @@ jobs:
     name: Clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable branch
         with:
           toolchain: 1.97.0
           components: clippy
 
       - name: Cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@23869a5bd66c73db3c0ac40331f3206eb23791dc # v2.9.1
 
       # uninlined_format_args is allowed: the codebase consistently uses
       # positional format! style. Everything else is an error.

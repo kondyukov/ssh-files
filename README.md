@@ -34,7 +34,8 @@ A dual-pane file manager for local and remote (SSH/SFTP) filesystems.
   authentication and host-key verification; `--virtual-relay` builds on it
   for endpoint pairs that are each only reachable through their own bastion
 - Authentication like `ssh`: explicit `-i` keys, then every SSH agent
-  identity, then default key files, then password
+  identity, then default key files, then keyboard-interactive (the PAM
+  prompt conversation), then password
 - `~/.ssh/config` support — host aliases, per-host users/ports/keys, and
   config-driven `ProxyJump`
 - Host key verification against `known_hosts` (trust-on-first-use)
@@ -43,6 +44,8 @@ A dual-pane file manager for local and remote (SSH/SFTP) filesystems.
 - Hidden-file toggle (`.`) — hidden files are shown and transferred by default; toggle to exclude them from view and transfers
 - Hierarchical selection
 - Flat or structure-preserving transfers
+- Copy as rsync — the context menu puts the exact `rsync` command for the
+  pending transfer in your clipboard; ssh-files never runs it
 - Rename, delete with confirmation
 - Mouse support and context menus
 - Cross-platform (Windows, macOS, Linux)
@@ -132,15 +135,17 @@ Host hpc
 
 makes `ssh-files hpc` connect as `researcher` through the bastion with the
 right key. Supported directives: `HostName`, `User`, `Port`, `IdentityFile`
-(repeatable; all keys are tried in order), and `ProxyJump` (hops are
-themselves resolved through the config, cycles are detected). Everything
-given explicitly on the command line wins over the config, and a `-J` flag
-replaces a config `ProxyJump` chain, exactly as with `ssh`. Unknown
-directives are ignored; a missing or unparseable config never blocks a
-connection.
+(repeatable; all keys are tried in order), `ProxyJump` (hops are
+themselves resolved through the config, cycles are detected), and
+`Include` (glob patterns, `~`, and relative paths resolved against
+`~/.ssh`, as `ssh` does). Both `Key value` and `Key=value` spellings are
+accepted. Everything given explicitly on the command line wins over the
+config, and a `-J` flag replaces a config `ProxyJump` chain, exactly as
+with `ssh`.
 
-Not supported (yet): `Include`, `Match` blocks, `ProxyCommand`, and
-`Key=value` syntax (use `Key value`).
+Not supported (yet): `Match` blocks and `ProxyCommand` — both are
+ignored with a startup warning. Other unknown directives are skipped
+silently, and a missing or unparseable config never blocks a connection.
 
 `--bench` compares the SFTP transfer path against a raw exec byte stream over
 the same connection, plus the system `scp` as a baseline, and prints MiB/s for
@@ -165,6 +170,14 @@ Remote-to-remote transfers stream through the client (the servers never
 talk to each other) and pick the byte path per side independently; when
 the sides differ the label reads `[read/write]`, e.g. `[streaming/sftp]`
 for a source that streams into a destination that only allows SFTP.
+
+Prefer rsync for a particular transfer? The context menu's "Copy rsync
+flat/tree" entries generate the equivalent command — same selection
+roots, same direction, same structure semantics, same hidden-file
+setting, with the connection's port, keys, and ProxyJump chain
+reproduced in `-e` — and place it in the system clipboard for you to
+inspect and run. ssh-files never executes it. (Dual-remote panes get no
+entry: rsync has no third-party transfer mode.)
 
 Files arrive under a temporary `.part` name and are renamed into place
 only once every byte is verified — a file wearing its final name is never
@@ -282,9 +295,6 @@ hardware.
 
 ## Future Work
 
-- **Copy as rsync** — a context-menu entry that emits the `rsync` command
-  equivalent to the transfer the current selection would perform: paste it
-  into a script, or use it to double-check us
 - **Lazy clipboard** — copy/cut/paste across panes and modes, resolved at
   paste time rather than copy time
 - **Direct tar / zip transfers** — bundle a selection into a single archive

@@ -43,6 +43,7 @@ pub async fn run(sftp: &SftpClientShared, conn: &ConnectionInfo, size_mib: u64) 
         conn.host.clone(),
         conn.user.clone(),
         None,
+        Default::default(),
     );
 
     // --- SFTP upload: the exact path our executors use ---

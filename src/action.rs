@@ -34,6 +34,13 @@ pub enum Action {
         direction: TransferDirection,
         mode: TransferMode,
     },
+    /// Copy the rsync command equivalent to the transfer the current
+    /// selection would perform into the system clipboard. Text only:
+    /// nothing is ever executed on the user's behalf.
+    CopyRsync {
+        direction: TransferDirection,
+        mode: TransferMode,
+    },
     // Clipboard (copy/cut/paste) is deferred past this release: the
     // variants and their dispatch machinery stay as disabled stubs, but
     // nothing constructs them - the menu entries and keymap registrations

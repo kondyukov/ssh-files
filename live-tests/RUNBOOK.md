@@ -19,13 +19,14 @@ NETEM_DELAY=40ms docker compose up -d --force-recreate
 ```
 
 Topology: bastion `:2201`, gateway `:2202`, plain-a `:2203`,
-sftponly `:2204`, pwonly `:2205`; **inner-b** is internal-only (reached
-only through bastion/gateway). User `test`; pwonly password `pw-secret-1`;
-keys `keys/id_ed25519` and `keys/id_enc` (passphrase `livetest`).
+sftponly `:2204`, pwonly `:2205`, kbdint `:2206` (PAM,
+keyboard-interactive only); **inner-b** is internal-only (reached
+only through bastion/gateway). User `test`; pwonly/kbdint password
+`pw-secret-1`; keys `keys/id_ed25519` and `keys/id_enc` (passphrase
+`livetest`).
 
 Every scenario runs in a hermetic sandbox (`runs/<name>/`): `HOME` is
-redirected so `known_hosts`, default keys, and both config files resolve
-there and never touch your machine.
+redirected so `known_hosts`, default keys, and both config files resolve there and never touch your machine.
 
 ## Wave 1 — connection layer (automated)
 
@@ -44,6 +45,9 @@ scenarios/run_all_wave1.sh
 | s06 | config `ProxyJump` tunnels to internal-only inner-b; both hops recorded |
 | s07 | `-J` overrides a config `ProxyJump` chain |
 | s08 | Two-hop `-J` chain to inner-b; all three hosts recorded |
+| s09 | kbd-interactive (PAM) conversation: wrong answer retried, right one connects |
+| s10 | ssh_config `Include` + `Key=value` resolve an alias; `Match`/`ProxyCommand` warn |
+| s11 | `@revoked` marker on the server's real key → hard refusal, never a TOFU prompt |
 
 ## Wave 2 — single-remote transfers (manual)
 
@@ -147,6 +151,24 @@ faze it):
 diff -r fixtures/hostile <local-dest>/hostile && echo OK
 ```
 
+Names a real filesystem cannot store (`../../escape.txt`, absolute
+paths — the path-traversal class) are covered outside the rig: no
+honest server can be made to produce them, so `cargo test
+hostile_server` runs the real SFTP client against an in-process server
+that lies in `readdir`, asserting the walk aborts and symlinks are
+skipped. See "Hostile directory listings" in SECURITY.md.
+
+### w2.5b Symlinks are skipped
+On plain-a, plant a link next to a real file:
+```sh
+docker compose exec -T plain-a sh -c \
+  'mkdir -p /data/incoming/linked && echo real > /data/incoming/linked/real.txt \
+   && ln -s /etc/passwd /data/incoming/linked/evil'
+```
+Download `linked` tree-wise into a fresh local dir. The status line must
+note `(1 symlink skipped)`; the destination must contain `real.txt` and
+**no** `evil` — neither a link nor a copy of `/etc/passwd`.
+
 ### w2.6 Cancel mid-transfer  (needs NETEM_DELAY)
 Start a big upload, press `q` during `big.bin`, confirm cancel. Expected
 (documented behavior): stops immediately, mid-file; already-written files
@@ -166,6 +188,16 @@ batch, never once per file.
 On a plain server, rename a file, delete a file, delete a directory that
 contains a dotfile, delete a naughty-named file. Refresh (`r`) and confirm
 each took effect.
+
+### w2.9 Copy as rsync
+On plain-a, select a directory or a few files, `m` → "Copy rsync flat"
+(or tree). Status reads "rsync command copied"; paste it into a shell
+and eyeball it: sources, destination, `-e 'ssh -p ... -i ...'` flags.
+To actually run it against the rig, your OpenSSH needs the host key
+under its own trust (`ssh-keyscan -p 2203 localhost`) and the container
+needs rsync (`docker compose exec plain-a apk add rsync`); then run it
+and `diff -r` the arrivals. Verified end-to-end during development; kept
+manual because the system clipboard is global machine state.
 
 ## Wave 3 — multi-host (manual)
 

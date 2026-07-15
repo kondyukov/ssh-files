@@ -30,4 +30,11 @@ if [ -n "${NETEM_DELAY:-}" ]; then
         || echo "netem: could not inject delay (missing NET_ADMIN?)" >&2
 fi
 
-exec /usr/sbin/sshd -D -e -f "/etc/ssh/roles/${ROLE:-plain}.conf"
+# Roles that authenticate through PAM (UsePAM yes) need the PAM-enabled
+# daemon; everything else runs the plain build.
+CONF="/etc/ssh/roles/${ROLE:-plain}.conf"
+SSHD=/usr/sbin/sshd
+if grep -q '^UsePAM yes' "$CONF" && [ -x /usr/sbin/sshd.pam ]; then
+    SSHD=/usr/sbin/sshd.pam
+fi
+exec "$SSHD" -D -e -f "$CONF"

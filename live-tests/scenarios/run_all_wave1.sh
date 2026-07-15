@@ -5,7 +5,7 @@
 set -eu
 cd "$(dirname "$0")"
 
-for s in s0*.sh; do
+for s in s[0-9][0-9]_*.sh; do
     echo "=== $s ==="
     ./"$s"
     echo

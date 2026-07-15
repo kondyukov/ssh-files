@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use russh_config::HostConfig;
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Maximum ProxyJump indirection when following ssh_config entries
 /// (alias -> ProxyJump -> alias -> ...); guards against config cycles.
@@ -202,25 +202,169 @@ fn default_lookup() -> impl Fn(&str) -> Option<HostConfig> {
 }
 
 /// Contents of the ssh config file: $SSH_FILES_SSH_CONFIG overrides the
-/// path, otherwise ~/.ssh/config.
+/// path, otherwise ~/.ssh/config. Preprocessed once per process (Include
+/// expansion, Key=value normalization, Match-block stripping), with any
+/// warnings printed on first load.
 fn ssh_config_contents() -> Option<String> {
-    let path = match std::env::var("SSH_FILES_SSH_CONFIG") {
-        Ok(p) if !p.is_empty() => PathBuf::from(p),
-        _ => directories::UserDirs::new()?
-            .home_dir()
-            .join(".ssh")
-            .join("config"),
-    };
-    if !path.exists() {
-        return None;
+    static CACHE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    CACHE
+        .get_or_init(|| {
+            let home = directories::UserDirs::new().map(|d| d.home_dir().to_path_buf());
+            let path = match std::env::var("SSH_FILES_SSH_CONFIG") {
+                Ok(p) if !p.is_empty() => PathBuf::from(p),
+                _ => home.as_ref()?.join(".ssh").join("config"),
+            };
+            if !path.exists() {
+                return None;
+            }
+            let ssh_dir = home.map(|h| h.join(".ssh")).unwrap_or_default();
+            let mut warnings = Vec::new();
+            let mut visited = Vec::new();
+            let contents =
+                preprocess_ssh_config(&path, &ssh_dir, 0, &mut visited, &mut warnings)?;
+            for w in warnings {
+                eprintln!("Warning: ssh config: {}", w);
+            }
+            Some(contents)
+        })
+        .clone()
+}
+
+/// The directives whose silent omission would change where or how a
+/// connection is made. Anything else unknown is skipped quietly, like
+/// every partial ssh_config implementation does.
+const CONSEQUENTIAL_UNSUPPORTED: &[&str] = &[
+    "proxycommand",
+    "identityagent",
+    "certificatefile",
+    "pkcs11provider",
+    "securitykeyprovider",
+];
+
+/// OpenSSH file-level semantics that russh-config's parser lacks:
+///
+/// - `Include` directives are expanded in place (glob patterns, `~`,
+///   relative paths resolved against ~/.ssh, depth-capped, cycles
+///   skipped), exactly as ssh does for user configs.
+/// - `Key=value` / `Key = value` forms are normalized to `Key value`
+///   (ssh accepts both spellings).
+/// - `Match` blocks are dropped whole, with a warning. They cannot be
+///   merely left in: the parser ignores the unknown `Match` line but
+///   would then misattribute the block's body to the enclosing Host.
+/// - Consequential directives we do not honor produce one warning each.
+fn preprocess_ssh_config(
+    path: &Path,
+    ssh_dir: &Path,
+    depth: usize,
+    visited: &mut Vec<PathBuf>,
+    warnings: &mut Vec<String>,
+) -> Option<String> {
+    if depth > 16 {
+        warnings.push(format!("{}: Include nesting too deep, skipped", path.display()));
+        return Some(String::new());
     }
-    match std::fs::read_to_string(&path) {
-        Ok(contents) => Some(contents),
+    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    if visited.contains(&canonical) {
+        return Some(String::new());
+    }
+    visited.push(canonical);
+
+    let raw = match std::fs::read_to_string(path) {
+        Ok(c) => c,
         Err(e) => {
-            eprintln!("Warning: could not read {}: {}", path.display(), e);
-            None
+            if depth == 0 {
+                eprintln!("Warning: could not read {}: {}", path.display(), e);
+                return None;
+            }
+            // Missing or unreadable included files are skipped, as ssh does
+            // with unmatched Include patterns.
+            return Some(String::new());
+        }
+    };
+
+    let mut out = String::new();
+    let mut in_match_block = false;
+    for line in raw.lines() {
+        let line = normalize_key_value(line);
+        let mut tokens = line.split_whitespace();
+        let keyword = tokens.next().unwrap_or("").to_ascii_lowercase();
+
+        if in_match_block {
+            if keyword == "host" {
+                in_match_block = false;
+            } else {
+                continue;
+            }
+        }
+
+        match keyword.as_str() {
+            "match" => {
+                if !warnings.iter().any(|w| w.contains("'Match'")) {
+                    warnings.push("'Match' blocks are not supported; ignored".to_string());
+                }
+                in_match_block = true;
+            }
+            "include" => {
+                for pattern in tokens {
+                    let pattern = pattern.trim_matches('"');
+                    let resolved = resolve_include_pattern(pattern, ssh_dir);
+                    let Ok(matches) = glob::glob(&resolved) else { continue };
+                    for file in matches.flatten() {
+                        if let Some(expanded) =
+                            preprocess_ssh_config(&file, ssh_dir, depth + 1, visited, warnings)
+                        {
+                            out.push_str(&expanded);
+                        }
+                    }
+                }
+            }
+            _ => {
+                if CONSEQUENTIAL_UNSUPPORTED.contains(&keyword.as_str())
+                    && !warnings.iter().any(|w| w.contains(&format!("'{}'", keyword)))
+                {
+                    warnings.push(format!("'{}' is not supported; ignored", keyword));
+                }
+                out.push_str(&line);
+                out.push('\n');
+            }
         }
     }
+    Some(out)
+}
+
+/// Resolve an Include pattern the way ssh does for user configs: `~`
+/// expands to the home directory, and relative patterns are taken
+/// relative to ~/.ssh.
+fn resolve_include_pattern(pattern: &str, ssh_dir: &Path) -> String {
+    if let Some(rest) = pattern.strip_prefix("~/") {
+        if let Some(dirs) = directories::UserDirs::new() {
+            return dirs.home_dir().join(rest).to_string_lossy().into_owned();
+        }
+    }
+    if Path::new(pattern).is_absolute() {
+        return pattern.to_string();
+    }
+    ssh_dir.join(pattern).to_string_lossy().into_owned()
+}
+
+/// Rewrite `Key=value` (with optional spaces around `=`) as `Key value`.
+/// Only an `=` glued to the first token counts: `SetEnv FOO=bar` keeps
+/// its `=` because the keyword is already whitespace-delimited.
+fn normalize_key_value(line: &str) -> String {
+    let trimmed = line.trim_start();
+    let indent = &line[..line.len() - trimmed.len()];
+    let keyword_end = trimmed
+        .find(|c: char| !c.is_ascii_alphanumeric())
+        .unwrap_or(trimmed.len());
+    let (keyword, rest) = trimmed.split_at(keyword_end);
+    if keyword.is_empty() {
+        return line.to_string();
+    }
+    let after = rest.trim_start();
+    if let Some(value) = after.strip_prefix('=') {
+        return format!("{}{} {}", indent, keyword, value.trim_start());
+    }
+    line.to_string()
 }
 
 fn prompt_username(host: &str) -> Result<String> {
@@ -339,6 +483,59 @@ mod tests {
     /// ~/.ssh/config or they become machine-dependent.
     fn no_config(_host: &str) -> Option<HostConfig> {
         None
+    }
+
+    #[test]
+    fn key_value_lines_are_normalized() {
+        assert_eq!(normalize_key_value("Port=2203"), "Port 2203");
+        assert_eq!(normalize_key_value("  Port = 2203"), "  Port 2203");
+        assert_eq!(normalize_key_value("Port 2203"), "Port 2203");
+        // A whitespace-delimited keyword keeps '=' in its value.
+        assert_eq!(normalize_key_value("SetEnv FOO=bar"), "SetEnv FOO=bar");
+        assert_eq!(normalize_key_value(""), "");
+    }
+
+    /// Include expansion end-to-end: globbed relative patterns resolve
+    /// against the ssh dir, Key=value inside included files normalizes,
+    /// Match blocks are dropped whole (their bodies must NOT leak into
+    /// the enclosing Host), and include cycles terminate.
+    #[test]
+    fn preprocess_expands_includes_and_strips_match() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let ssh = dir.path();
+        std::fs::create_dir(ssh.join("config.d")).unwrap();
+        std::fs::write(
+            ssh.join("config"),
+            "Include config.d/*.conf\nInclude config\nHost plain\n  Port 22\n",
+        )
+        .unwrap();
+        std::fs::write(
+            ssh.join("config.d").join("a.conf"),
+            "Host alias\n  HostName=real.example\n  Port = 2222\nMatch host *.prod\n  User evil\nHost other\n  User good\n",
+        )
+        .unwrap();
+
+        let mut warnings = Vec::new();
+        let mut visited = Vec::new();
+        let text =
+            preprocess_ssh_config(&ssh.join("config"), ssh, 0, &mut visited, &mut warnings)
+                .unwrap();
+
+        // The include is textually in place and normalized.
+        assert!(text.contains("HostName real.example"), "got:\n{}", text);
+        assert!(text.contains("Port 2222"));
+        // The Match block vanished entirely; what follows it survived.
+        assert!(!text.to_lowercase().contains("match"));
+        assert!(!text.contains("evil"));
+        assert!(text.contains("User good"));
+        // Self-include terminated, base content intact.
+        assert!(text.contains("Host plain"));
+        assert!(warnings.iter().any(|w| w.contains("'Match'")), "warnings: {:?}", warnings);
+
+        // And the real parser resolves a host out of the expanded text.
+        let cfg = russh_config::parse(&text, "alias").unwrap().host_config;
+        assert_eq!(cfg.hostname.as_deref(), Some("real.example"));
+        assert_eq!(cfg.port, Some(2222));
     }
 
     /// Lookup backed by a literal config string (exercises the real

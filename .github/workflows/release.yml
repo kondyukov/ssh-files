@@ -3,6 +3,15 @@
 # Coverage: Linux x64/ARM64 (musl, fully static), Windows x64/ARM64
 # (static CRT), macOS x64/ARM64. Artifact names are a contract with
 # install.sh / install.ps1 - change them together.
+#
+# Supply chain: actions are pinned to full SHAs (mutable tags are a
+# vector; dependabot keeps pins fresh), and every archive gets a build
+# provenance attestation at the job that built it - verify with
+#   gh attestation verify <archive> --repo <owner>/ssh-files
+# The attestation proves the artifact was built by this workflow from
+# public source at a given commit; it does not vouch for the commit
+# itself. Build jobs therefore need id-token + attestations grants on
+# top of the read-only default.
 name: Release
 
 on:
@@ -11,6 +20,9 @@ on:
       - 'v*'
   workflow_dispatch:  # Dry run: builds everything, skips the release job
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -18,11 +30,15 @@ jobs:
   build-linux-x64:
     name: Build Linux (x64, musl)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable branch
         with:
           toolchain: 1.97.0
           targets: x86_64-unknown-linux-musl
@@ -43,8 +59,13 @@ jobs:
           cp LICENSE NOTICE target/x86_64-unknown-linux-musl/release/
           tar -C target/x86_64-unknown-linux-musl/release -czvf ssh-files-linux-x64.tar.gz ssh-files LICENSE NOTICE
 
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: ssh-files-linux-x64.tar.gz
+
       - name: Upload artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ssh-files-linux-x64
           path: ssh-files-linux-x64.tar.gz
@@ -52,17 +73,21 @@ jobs:
   build-linux-arm64:
     name: Build Linux (ARM64, musl)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable branch
         with:
           toolchain: 1.97.0
 
       # cross provides the aarch64 musl C toolchain in a container image.
       - name: Install cross
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2.83.2
         with:
           tool: cross
 
@@ -76,8 +101,13 @@ jobs:
           cp LICENSE NOTICE target/aarch64-unknown-linux-musl/release/
           tar -C target/aarch64-unknown-linux-musl/release -czvf ssh-files-linux-arm64.tar.gz ssh-files LICENSE NOTICE
 
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: ssh-files-linux-arm64.tar.gz
+
       - name: Upload artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ssh-files-linux-arm64
           path: ssh-files-linux-arm64.tar.gz
@@ -85,11 +115,15 @@ jobs:
   build-windows-x64:
     name: Build Windows (x64, static)
     runs-on: windows-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable branch
         with:
           toolchain: 1.97.0
 
@@ -107,8 +141,13 @@ jobs:
           7z a ../../ssh-files-windows-x64.zip ssh-files.exe LICENSE NOTICE
           7z l ../../ssh-files-windows-x64.zip
 
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: ssh-files-windows-x64.zip
+
       - name: Upload artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ssh-files-windows-x64
           path: ssh-files-windows-x64.zip
@@ -116,11 +155,15 @@ jobs:
   build-windows-arm64:
     name: Build Windows (ARM64, static)
     runs-on: windows-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable branch
         with:
           toolchain: 1.97.0
           targets: aarch64-pc-windows-msvc
@@ -141,8 +184,13 @@ jobs:
           7z a ../../../ssh-files-windows-arm64.zip ssh-files.exe LICENSE NOTICE
           7z l ../../../ssh-files-windows-arm64.zip
 
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: ssh-files-windows-arm64.zip
+
       - name: Upload artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ssh-files-windows-arm64
           path: ssh-files-windows-arm64.zip
@@ -151,11 +199,15 @@ jobs:
     name: Build macOS (x64 + ARM64)
     runs-on: macos-latest  # ARM runner; x64 is cross-compiled (macos-13
                            # Intel runners are being retired)
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable branch
         with:
           toolchain: 1.97.0
           targets: x86_64-apple-darwin,aarch64-apple-darwin
@@ -177,14 +229,19 @@ jobs:
           tar -C target/aarch64-apple-darwin/release -czvf ssh-files-macos-arm64.tar.gz ssh-files LICENSE NOTICE
           tar -C target/x86_64-apple-darwin/release -czvf ssh-files-macos-x64.tar.gz ssh-files LICENSE NOTICE
 
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: ssh-files-macos-*.tar.gz
+
       - name: Upload ARM64 artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ssh-files-macos-arm64
           path: ssh-files-macos-arm64.tar.gz
 
       - name: Upload x64 artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ssh-files-macos-x64
           path: ssh-files-macos-x64.tar.gz
@@ -203,7 +260,7 @@ jobs:
       contents: write
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: artifacts
 
@@ -220,7 +277,7 @@ jobs:
           cat SHA256SUMS
 
       - name: Create Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           files: |
             artifacts/ssh-files-linux-x64/ssh-files-linux-x64.tar.gz

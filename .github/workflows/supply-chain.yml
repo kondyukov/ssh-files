@@ -1,0 +1,44 @@
+# Dependency advisories (RustSec), license compliance, bans, and
+# registry-source checks via cargo-deny; policy lives in deny.toml.
+#
+# The weekly cron is the piece that matters most: advisories are
+# published against *unchanged* lockfiles, so a repo that only checks on
+# push never hears about them. Deliberately NOT a gate on unrelated PRs
+# - a CVE disclosed overnight in a transitive dep should not block a
+# docs change; manifest-touching changes and the schedule cover the
+# real exposure.
+name: Supply chain
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'deny.toml'
+      - '.github/workflows/supply-chain.yml'
+  pull_request:
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'deny.toml'
+      - '.github/workflows/supply-chain.yml'
+  schedule:
+    - cron: '31 6 * * 1'  # Mondays 06:31 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cargo-deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - name: cargo deny check
+        uses: EmbarkStudios/cargo-deny-action@c3bbe7e4e3f7baeee1a3dd9aec0a3b2aded580fb # v2.1.1
+        with:
+          command: check
+          rust-version: "1.97.0"

@@ -1,0 +1,23 @@
+# Weekly dependency PRs. Cargo minor/patch updates arrive grouped as one
+# reviewable PR (majors stay individual - those deserve their own look).
+# The github-actions ecosystem understands SHA pins and bumps them with
+# the version comment intact, which is what keeps the pinned workflows
+# from rotting.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      cargo-minor-patch:
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday

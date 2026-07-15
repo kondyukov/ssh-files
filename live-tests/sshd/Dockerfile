@@ -1,6 +1,8 @@
 FROM alpine:3.20
 
-RUN apk add --no-cache openssh iproute2 \
+# openssh-server-pam adds /usr/sbin/sshd.pam (+ /etc/pam.d/sshd), used by
+# the kbdint role; the plain sshd binary serves every other role.
+RUN apk add --no-cache openssh openssh-server-pam iproute2 \
     && adduser -D test \
     # A password must exist for pubkey login to work at all on Alpine
     # (locked accounts refuse every auth method). Servers that should not

@@ -192,6 +192,7 @@ impl FileSource for LocalSource {
             full_path: root.to_string_lossy().to_string(),
             components: Vec::new(),
             is_dir,
+            is_symlink: false,
             size: if is_dir { 0 } else { metadata.len() },
         }];
 
@@ -242,11 +243,16 @@ impl LocalSource {
             components.push(name);
             let entry_path = entry.path();
 
+            // Local filesystems are not attacker-controlled the way an SFTP
+            // server is (the OS never yields `.`/`..`/separator names from
+            // readdir), and local symlinks are commonly intentional, so the
+            // remote symlink-skip policy deliberately does not apply here.
             if metadata.is_dir() {
                 out.push(WalkEntry {
                     full_path: entry_path.to_string_lossy().to_string(),
                     components: components.clone(),
                     is_dir: true,
+                    is_symlink: false,
                     size: 0,
                 });
                 Box::pin(self.walk_inner(&entry_path, &components, include_hidden, out)).await?;
@@ -255,6 +261,7 @@ impl LocalSource {
                     full_path: entry_path.to_string_lossy().to_string(),
                     components,
                     is_dir: false,
+                    is_symlink: false,
                     size: metadata.len(),
                 });
             }

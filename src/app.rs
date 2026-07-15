@@ -15,12 +15,16 @@ use crate::executor::{self, TransferConfig};
 use crate::file_tree::FileTree;
 use crate::input::{ContextKind, ContextMenuState, ContextStack, InputContext};
 use crate::keymap::Keymap;
-use crate::source::{mapping, CollectedFiles, FileInfo, FileSource, LocalSource, RemoteSource};
+use crate::source::{
+    mapping, CollectedFiles, FileInfo, FileSource, LocalSource, RemoteCliOpts, RemoteSource,
+};
 use crate::ssh::SftpClientShared;
 use crate::theme::Theme;
 use crate::ui::geometry;
 use crate::ui::icons::IconSet;
-use crate::transfer::{TransferDirection, TransferResult, TransferState};
+use crate::transfer::{
+    build_rsync_command, RsyncEndpoint, TransferDirection, TransferResult, TransferState,
+};
 
 /// Human summary of a selection split into files and directories,
 /// e.g. "3 files, 1 directory". Zero-count parts are omitted.
@@ -46,6 +50,33 @@ fn streaming_label(ready: Option<bool>) -> &'static str {
 
 /// Last component of a directory path for compact display (e.g. context
 /// menu labels); filesystem roots fall back to the path itself.
+/// Connection facts a remote source needs to reconstruct an equivalent
+/// ssh command line for rsync generation (text only, never executed).
+fn remote_cli_opts(conn: &ConnectionInfo) -> RemoteCliOpts {
+    let jump_chain = if conn.jumps.is_empty() {
+        None
+    } else {
+        Some(
+            conn.jumps
+                .iter()
+                .map(|j| {
+                    if j.port == 22 {
+                        format!("{}@{}", j.user, j.host)
+                    } else {
+                        format!("{}@{}:{}", j.user, j.host, j.port)
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(","),
+        )
+    };
+    RemoteCliOpts {
+        port: conn.port,
+        identity_files: conn.identity_files.clone(),
+        jump_chain,
+    }
+}
+
 fn dir_display_name(path: &str) -> String {
     std::path::Path::new(path)
         .file_name()
@@ -191,6 +222,7 @@ impl App {
             conn.host.clone(),
             conn.user.clone(),
             exec,
+            remote_cli_opts(conn),
         ));
 
         Self::new_with_sources(
@@ -252,6 +284,7 @@ impl App {
             left_conn.host.clone(),
             left_conn.user.clone(),
             left_exec,
+            remote_cli_opts(left_conn),
         ));
         let right: Arc<dyn FileSource> = Arc::new(RemoteSource::new(
             right_sftp.sftp(),
@@ -259,6 +292,7 @@ impl App {
             right_conn.host.clone(),
             right_conn.user.clone(),
             right_exec,
+            remote_cli_opts(right_conn),
         ));
 
         let status = format!("{} <-> {}", left_conn.host, right_conn.host);
@@ -447,6 +481,13 @@ impl App {
                 if let Err(e) = result {
                     self.status = format!("Transfer failed: {}", e);
                 }
+            }
+            Action::CopyRsync { direction, mode } => {
+                let source_pane = match direction {
+                    TransferDirection::Upload => Pane::Local,
+                    TransferDirection::Download => Pane::Remote,
+                };
+                self.copy_rsync_command(source_pane, mode == TransferMode::Preserve);
             }
             Action::ClipboardCopy => self.clipboard_copy(),
             Action::ClipboardCut => self.clipboard_cut(),
@@ -689,6 +730,7 @@ impl App {
     /// Spawn a prepared transfer and report it in the status line.
     fn launch_transfer(&mut self, pending: PendingTransfer) {
         let file_count = pending.collected.file_count();
+        let note = pending.collected.skipped_note();
         self.spawn_transfer(
             pending.source,
             pending.dest,
@@ -696,7 +738,7 @@ impl App {
             pending.dest_base,
             pending.direction,
         );
-        self.status = format!("Starting transfer of {} file(s)...", file_count);
+        self.status = format!("Starting transfer of {} file(s)...{}", file_count, note);
     }
 
     /// Proceed with the transfer held by the overwrite confirmation.
@@ -984,6 +1026,22 @@ impl App {
             Action::Transfer { direction, mode: TransferMode::Preserve },
             format!("Send tree {} {}{}", arrow, dest, count_str),
         ));
+
+        // The same transfer as an rsync command in the clipboard, for the
+        // user to inspect and run themselves. rsync has no third-party
+        // mode, so dual-remote panes get no entry.
+        let both_remote = self.left_source.as_ref().is_some_and(|s| s.is_remote())
+            && self.right_source.as_ref().is_some_and(|s| s.is_remote());
+        if !both_remote {
+            items.push((
+                Action::CopyRsync { direction, mode: TransferMode::Flat },
+                format!("Copy rsync flat {} {}", arrow, dest),
+            ));
+            items.push((
+                Action::CopyRsync { direction, mode: TransferMode::Preserve },
+                format!("Copy rsync tree {} {}", arrow, dest),
+            ));
+        }
 
         // Clipboard (copy/cut/paste) is deferred past this release; restore
         // these entries when it lands completely and cleanly.
@@ -1343,6 +1401,64 @@ impl App {
     }
 
     /// Copy current item's path to system clipboard
+    /// Put the rsync command equivalent to the pending transfer into the
+    /// system clipboard: same selection roots, same direction, same
+    /// flat/tree semantics, same hidden-file setting. Generation only -
+    /// the command is never executed by ssh-files.
+    pub fn copy_rsync_command(&mut self, source_pane: Pane, preserve: bool) {
+        let dest_pane = match source_pane {
+            Pane::Local => Pane::Remote,
+            Pane::Remote => Pane::Local,
+        };
+        let (Ok(source), Ok(dest)) = (self.pane_source(source_pane), self.pane_source(dest_pane))
+        else {
+            self.status = String::from("No source for pane");
+            return;
+        };
+        if source.is_remote() && dest.is_remote() {
+            self.status = String::from("rsync has no remote-to-remote mode");
+            return;
+        }
+
+        let (source_tree, dest_base) = match source_pane {
+            Pane::Local => (&self.local_tree, self.remote_tree.root_path.clone()),
+            Pane::Remote => (&self.remote_tree, self.local_tree.root_path.clone()),
+        };
+        let selected = source_tree.get_selected_for_transfer();
+        if selected.is_empty() {
+            self.status = String::from("No files selected");
+            return;
+        }
+        let selections: Vec<String> =
+            selected.iter().map(|n| n.relative_path.clone()).collect();
+
+        let src_ep = RsyncEndpoint {
+            prefix: source.rsync_prefix(),
+            ssh_command: source.rsync_ssh_command(),
+        };
+        let dst_ep = RsyncEndpoint {
+            prefix: dest.rsync_prefix(),
+            ssh_command: dest.rsync_ssh_command(),
+        };
+        let cmd = build_rsync_command(
+            &src_ep,
+            &dst_ep,
+            &source_tree.root_path,
+            &dest_base,
+            &selections,
+            preserve,
+            self.show_hidden,
+        );
+
+        let _ = self.system_clipboard.set_text(&cmd);
+        self.status = format!(
+            "rsync command copied ({}, {} item{})",
+            if preserve { "tree" } else { "flat" },
+            selections.len(),
+            if selections.len() == 1 { "" } else { "s" },
+        );
+    }
+
     pub fn copy_path_to_clipboard(&mut self) {
         let tree = match self.focus {
             Pane::Local => &self.local_tree,
@@ -1428,9 +1544,10 @@ impl App {
 
         let dest_base = self.remote_tree.root_path.clone();
         let file_count = collected.file_count();
+        let note = collected.skipped_note();
         self.spawn_transfer(source, dest, collected, dest_base, TransferDirection::Upload);
 
-        self.status = format!("Transferring {} file(s)...", file_count);
+        self.status = format!("Transferring {} file(s)...{}", file_count, note);
         Ok(())
     }
 
@@ -1465,9 +1582,10 @@ impl App {
 
         let dest_base = self.local_tree.root_path.clone();
         let file_count = collected.file_count();
+        let note = collected.skipped_note();
         self.spawn_transfer(source, dest, collected, dest_base, TransferDirection::Download);
 
-        self.status = format!("Transferring {} file(s)...", file_count);
+        self.status = format!("Transferring {} file(s)...{}", file_count, note);
         Ok(())
     }
 
@@ -1583,7 +1701,11 @@ impl App {
         }
 
         if collected.is_empty() {
-            self.status = String::from("No files found in selection");
+            self.status = if collected.skipped_symlinks > 0 {
+                format!("No files to transfer{}", collected.skipped_note())
+            } else {
+                String::from("No files found in selection")
+            };
             return Ok(());
         }
 

@@ -21,6 +21,26 @@ impl client::Handler for ClientHandler {
         &mut self,
         server_public_key: &keys::PublicKey,
     ) -> Result<bool, Self::Error> {
+        // @revoked markers first: russh's checker skips marker lines, so an
+        // explicitly banned key would otherwise degrade to a TOFU prompt.
+        // Errors reading the file also refuse the connection (fail closed).
+        if super::revoked::key_is_revoked(&self.host, self.port, server_public_key)? {
+            eprintln!("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@");
+            eprintln!("@       WARNING: REVOKED HOST KEY DETECTED!               @");
+            eprintln!("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@");
+            eprintln!(
+                "The {} host key presented by '{}' is marked @revoked in known_hosts",
+                server_public_key.algorithm(),
+                self.host
+            );
+            eprintln!("and must never be accepted.");
+            eprintln!(
+                "Revoked key fingerprint: {}",
+                server_public_key.fingerprint(HashAlg::Sha256)
+            );
+            anyhow::bail!("Host key verification failed: revoked key.")
+        }
+
         match keys::check_known_hosts(&self.host, self.port, server_public_key) {
             // Key matches the known_hosts record.
             Ok(true) => Ok(true),
@@ -62,6 +82,19 @@ impl ClientHandler {
             key.algorithm(),
             key.fingerprint(HashAlg::Sha256)
         );
+        // A CA-trusted host presents as unknown here because host
+        // certificates are unsupported (blocked upstream in russh — see
+        // revoked::cert_authority_matches for the seams). Say so, rather
+        // than silently ignoring the user's CA configuration.
+        if super::revoked::cert_authority_matches(&self.host, self.port) {
+            println!(
+                "Note: a @cert-authority entry in known_hosts matches this host, but this"
+            );
+            println!(
+                "client does not support host certificates; verify the fingerprint above"
+            );
+            println!("against your CA's issuance records.");
+        }
         print!("Are you sure you want to continue connecting (yes/no)? ");
         io::stdout().flush()?;
 
@@ -213,8 +246,11 @@ fn session_config() -> Arc<client::Config> {
 
 /// Run the authentication ladder on a freshly connected session, mirroring
 /// ssh: explicit keys (the -i key, then ssh_config IdentityFile entries, in
-/// order), then the SSH agent, then default key files, then password
-/// (pre-supplied if given, otherwise prompted interactively).
+/// order), then the SSH agent, then default key files, then
+/// keyboard-interactive (the PAM reality on most Linux servers), then
+/// password (pre-supplied if given, otherwise prompted interactively).
+/// Interactive secret prompts share one budget of three attempts across
+/// keyboard-interactive and password, like ssh's NumberOfPasswordPrompts.
 async fn authenticate(
     session: &mut client::Handle<ClientHandler>,
     host: &str,
@@ -243,6 +279,12 @@ async fn authenticate(
         }
     }
 
+    let mut prompts_left: u32 = 3;
+
+    if try_keyboard_interactive(session, user, password, &mut prompts_left).await? {
+        return Ok(());
+    }
+
     if let Some(pass) = password {
         if password_accepted(session, user, pass).await {
             return Ok(());
@@ -252,7 +294,8 @@ async fn authenticate(
     // Key methods exhausted: fall back to interactive password attempts,
     // as ssh does. Connects happen before the TUI takes the terminal, so
     // prompting here is safe.
-    for _ in 0..3 {
+    while prompts_left > 0 {
+        prompts_left -= 1;
         let pass = crate::cli::read_password(&format!("{}@{}'s password: ", user, host))?;
         if password_accepted(session, user, &pass).await {
             return Ok(());
@@ -261,6 +304,90 @@ async fn authenticate(
     }
 
     anyhow::bail!("Authentication failed for {}@{}", user, host)
+}
+
+/// Keyboard-interactive auth: relay the server's prompt conversation to
+/// the terminal, as ssh does. PAM-backed servers commonly advertise only
+/// this method, with password auth disabled.
+///
+/// A server that does not support the method fails the request without
+/// ever sending prompts - that case falls through to password auth
+/// immediately and consumes no attempt budget. A pre-supplied password
+/// answers the first hidden prompt once (the sshpass convention), so
+/// scripted connects work against keyboard-interactive-only servers.
+async fn try_keyboard_interactive(
+    session: &mut client::Handle<ClientHandler>,
+    user: &str,
+    password: Option<&str>,
+    prompts_left: &mut u32,
+) -> Result<bool> {
+    use russh::client::KeyboardInteractiveAuthResponse as Kbd;
+
+    let mut presupplied = password;
+
+    // The rounds are capped independently of the prompt budget: a server
+    // that only ever sends echoed prompts would otherwise loop forever.
+    'round: for _ in 0..3 {
+        if *prompts_left == 0 {
+            break;
+        }
+        let mut response = session
+            .authenticate_keyboard_interactive_start(user, None)
+            .await?;
+        let mut prompted = false;
+
+        loop {
+            match response {
+                Kbd::Success => return Ok(true),
+                Kbd::Failure { .. } => {
+                    if !prompted {
+                        // Method rejected outright: not supported here.
+                        return Ok(false);
+                    }
+                    eprintln!("Permission denied, please try again.");
+                    continue 'round;
+                }
+                Kbd::InfoRequest { name, instructions, prompts } => {
+                    if !name.trim().is_empty() {
+                        println!("{}", name.trim());
+                    }
+                    if !instructions.trim().is_empty() {
+                        println!("{}", instructions.trim());
+                    }
+
+                    let mut answers = Vec::with_capacity(prompts.len());
+                    for p in &prompts {
+                        prompted = true;
+                        if p.echo {
+                            answers.push(read_line_echoed(&p.prompt)?);
+                        } else if let Some(pass) = presupplied.take() {
+                            answers.push(pass.to_string());
+                        } else {
+                            if *prompts_left == 0 {
+                                return Ok(false);
+                            }
+                            *prompts_left -= 1;
+                            answers.push(crate::cli::read_password(&p.prompt)?);
+                        }
+                    }
+
+                    response = session
+                        .authenticate_keyboard_interactive_respond(answers)
+                        .await?;
+                }
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// Read one visible (echoed) line for a keyboard-interactive prompt.
+fn read_line_echoed(prompt: &str) -> Result<String> {
+    print!("{}", prompt);
+    io::stdout().flush()?;
+    let mut answer = String::new();
+    io::stdin().read_line(&mut answer)?;
+    Ok(answer.trim_end_matches(['\r', '\n']).to_string())
 }
 
 async fn password_accepted(
